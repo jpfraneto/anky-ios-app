@@ -1,32 +1,18 @@
-//
-//  AnkyApp.swift
-//  Anky
-//
-//  Created by kithkui on 07-03-26.
-//
-
 import SwiftUI
-import SwiftData
 
 @main
 struct AnkyApp: App {
-    var sharedModelContainer: ModelContainer = {
-        let schema = Schema([
-            Item.self,
-        ])
-        let modelConfiguration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
+    @State private var appState = AppState()
 
-        do {
-            return try ModelContainer(for: schema, configurations: [modelConfiguration])
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
+    init() {
+        AnkyAudioSession.configureIfNeeded()
+        FontRegistrar.registerBundledFonts()
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(appState)
         }
-        .modelContainer(sharedModelContainer)
     }
 }
