@@ -1,5 +1,7 @@
 # Lesson 005: Seed Identity and the `/swift/v2` Unlock Model
 
+This lesson still explains the unlock model correctly, but some of its older crypto details were written during the EVM-to-Solana transition. Do not use this file as the current source of truth for signing, wallet format, or verifier commands. For the current shipping identity, seal gesture, altar, Apple Pay, and QR auth path, also read [008_altar_seal_apple_pay_and_qr_auth.md](/Users/kithkui/Desktop/ankY/JP_TUTORIAL/008_altar_seal_apple_pay_and_qr_auth.md).
+
 ## Why this lesson exists
 
 The app's center of gravity changed.
@@ -62,14 +64,14 @@ That is why `SeedIdentityManager` and `SeedAuthService` are separate files.
 
 Keeping those responsibilities separate makes the code safer to reason about.
 
-## Mental model three: backup ceremony is part of onboarding, not a settings screen
+## Mental model three: welcome is part of onboarding, not a settings screen
 
 Look at [ContentView.swift](/Users/kithkui/Desktop/Anky/Anky/ContentView.swift).
 
 The root view now switches between:
 
 - `SplashView`
-- `BackupCeremonyView`
+- `WelcomeFlowView`
 - `RecoveryImportView`
 - `LockedNowShell`
 - `UnlockedShellView`
@@ -79,14 +81,19 @@ This is a strong SwiftUI lesson:
 - the root UI is a function of app state
 - routes are product truth, not navigation accidents
 
-The backup ceremony is not hidden inside profile/settings because the recovery phrase is the user's identity root.
+The welcome flow is not hidden inside profile/settings because first-open product truth lives there:
 
-That ceremony is driven by:
+- the user is here to write for 8 minutes
+- Face ID can protect the device-local identity
+- the seed phrase is stored quietly in Keychain/iCloud Keychain-compatible storage
+- daily notifications can invite the practice back at 6:00 AM
+
+That flow is driven by:
 
 - `appState.pendingMnemonic`
-- `appState.hasBackedUpPhrase`
+- `appState.hasCompletedWelcome`
 
-When the user confirms backup, `AppState.completeBackupCeremony()` marks the backup as complete and moves the route into either `locked` or `unlocked`.
+When the user finishes the welcome flow, `AppState.completeWelcome()` marks onboarding as complete, clears the pending mnemonic preview, and moves the route into either `locked` or `unlocked`.
 
 ## Mental model four: the auth flow is challenge-sign-verify, not token exchange
 
@@ -237,7 +244,7 @@ That is why [AnkyTests.swift](/Users/kithkui/Desktop/Anky/AnkyTests/AnkyTests.sw
 - checksum wallet address output
 - Ethereum challenge signature verification against a backend-style challenge message
 
-There is also an opt-in live backend verification test path.
+There is also an opt-in live backend verification test path, plus [LiveBackendVerifier.swift](/Users/kithkui/Desktop/Anky/Tools/LiveBackendVerifier.swift) for a direct production transcript that uses the same EVM derivation and signing code as the app.
 
 The lesson here is simple:
 
@@ -265,14 +272,16 @@ Check:
 
 This is usually a derivation issue, not a networking issue.
 
-### 2b. Live EVM auth still fails with "invalid public key"
+### 2b. Live EVM auth fails before `verify`
 
 Check:
 
-- whether the hosted backend validator has been updated for `0x...` addresses
 - the exact `wallet_address` sent to `/swift/v2/auth/challenge`
+- whether the address is a canonical `0x...` EVM address derived from `m/44'/60'/0'/0/0`
+- the exact `wallet_address` sent to `/swift/v2/auth/challenge`
+- the exact request and response from the live verifier or from the app logs
 
-As of March 16, 2026, the hosted endpoint still rejects canonical EVM addresses, so this specific failure can be backend alignment rather than an iOS signing bug.
+As of March 16, 2026, the hosted backend accepts canonical `0x...` addresses again. If this step fails now, treat it as a real contract regression or an iOS signing/serialization bug and capture the exact payloads.
 
 ### 3. A real anky shows locally but does not appear in cloud history
 
@@ -289,7 +298,6 @@ This is usually a persistence-state issue, not a rendering issue.
 Check the difference between:
 
 - `resumeFromPauseFromTyping(at:)`
-- `resumeFromPauseManually(at:)`
 
 This is a state-machine/input issue inside [AnkyWritingSession.swift](/Users/kithkui/Desktop/Anky/Anky/AnkyWritingSession.swift).
 
@@ -299,7 +307,7 @@ Here is the end-to-end path:
 
 1. On first open, `AppState.bootstrap()` checks whether a local seed identity exists.
 2. If not, `SeedIdentityManager.generateIdentity()` creates one and stores the private key in Keychain.
-3. `ContentView` shows the backup ceremony.
+3. `ContentView` shows the welcome flow.
 4. The user enters the locked `NOW` shell.
 5. `WritingFlowModel` captures text and local timing data.
 6. A short session stays local-only.
@@ -313,7 +321,24 @@ That is the current mobile spine of the product.
 
 1. Put a breakpoint in `AppState.bootstrap()`.
 2. Delete the app's local Keychain items and relaunch.
-3. Watch the route move from `booting` to `backupCeremony`.
+3. Watch the route move from `booting` to `welcome`.
 4. Put another breakpoint in `SeedAuthService.performAuth(...)`.
 5. Finish a qualifying local writing and watch the challenge-sign-verify flow run before `/swift/v2/write`.
 6. Inspect `appState.hasLocalIdentity` and `appState.hasUnlockedFullExperience` before and after the persisted write succeeds.
+
+You can also compile and run the direct verifier from the repo root:
+
+```bash
+clang -c Anky/Crypto/Vendored/WalletKit/secp256k1/secp256k1.c -IAnky/Crypto/Vendored/WalletKit/secp256k1/include -IAnky/Crypto/Vendored/WalletKit/secp256k1 -o /tmp/secp256k1.o
+clang -c Anky/Crypto/Vendored/WalletKit/keccaktiny/keccak-tiny.c -IAnky/Crypto/Vendored/WalletKit/keccaktiny/include -o /tmp/keccak-tiny.o
+xcrun swiftc -o /tmp/anky-live-verifier Tools/LiveBackendVerifier.swift Anky/Crypto/BIP39EnglishWordlist.swift Anky/Crypto/EthereumSeedIdentityCrypto.swift /tmp/secp256k1.o /tmp/keccak-tiny.o -import-objc-header Anky/Anky-Bridging-Header.h -Xcc -IAnky/Crypto/Vendored/WalletKit/secp256k1/include -Xcc -IAnky/Crypto/Vendored/WalletKit/secp256k1 -Xcc -IAnky/Crypto/Vendored/WalletKit/keccaktiny/include
+/tmp/anky-live-verifier
+```
+
+That tool prints the exact request and response pairs for:
+
+- challenge
+- verify
+- me
+- a short write that should stay local-only
+- a real write that should persist and appear in cloud history

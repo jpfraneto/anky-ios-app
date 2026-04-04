@@ -31,7 +31,7 @@ enum SeedIdentityError: LocalizedError, Equatable {
         case .missingIdentity:
             return "Your local identity could not be found."
         case .invalidWordCount:
-            return "Enter all 24 words from your recovery phrase."
+            return "Enter all 12 words from your recovery phrase."
         case .invalidWords, .invalidChecksum:
             return "That recovery phrase is not valid."
         case .keychainFailure:
@@ -61,7 +61,7 @@ final class SeedIdentityManager {
         SeedIdentityStatus(
             hasIdentity: KeychainHelper.getData(Keys.privateKey, synchronizable: true) != nil,
             hasCompletedBackup: KeychainHelper.get(Keys.backupCompleted, synchronizable: true) == "true",
-            pendingMnemonic: KeychainHelper.get(Keys.pendingMnemonic)
+            pendingMnemonic: KeychainHelper.get(Keys.pendingMnemonic, synchronizable: true)
         )
     }
 
@@ -85,9 +85,19 @@ final class SeedIdentityManager {
         return try SeedIdentityCrypto.walletAddress(fromPrivateKey: privateKey)
     }
 
+    func solanaAddress() throws -> String {
+        try walletAddress()
+    }
+
     func sign(message: Data) throws -> Data {
         let privateKey = try loadPrivateKey()
         return try SeedIdentityCrypto.sign(message: message, privateKeyData: privateKey)
+    }
+
+    /// Returns the raw 32-byte Ed25519 public key.
+    func publicKey() throws -> Data {
+        let privateKey = try loadPrivateKey()
+        return try SeedIdentityCrypto.publicKey(fromPrivateKey: privateKey)
     }
 
     func wipeIdentity() {
@@ -111,7 +121,7 @@ final class SeedIdentityManager {
         }
 
         if keepPendingPhrase {
-            guard KeychainHelper.set(mnemonic, for: Keys.pendingMnemonic) else {
+            guard KeychainHelper.set(mnemonic, for: Keys.pendingMnemonic, synchronizable: true) else {
                 throw SeedIdentityError.keychainFailure
             }
         } else {

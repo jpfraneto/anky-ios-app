@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		BB00000100000000000000CC /* StripeApplePay in Frameworks */ = {isa = PBXBuildFile; productRef = BB00000300000000000000CC /* StripeApplePay */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		4E6E6DD52F5C423A007957FA /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -21,13 +25,44 @@
 			remoteGlobalIDString = 4E6E6DC42F5C4238007957FA;
 			remoteInfo = Anky;
 		};
+		AA00000B00000000000000CC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4E6E6DBD2F5C4238007957FA /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA00000700000000000000CC;
+			remoteInfo = AnkyKeyboard;
+		};
 /* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA00000D00000000000000CC /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		4E6E6DC52F5C4238007957FA /* Anky.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Anky.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4E6E6DD42F5C423A007957FA /* AnkyTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnkyTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4E6E6DDE2F5C423A007957FA /* AnkyUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AnkyUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA00000100000000000000CC /* AnkyKeyboard.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AnkyKeyboard.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		AA00001000000000000000CC /* Exceptions for "AnkyKeyboard" folder in "AnkyKeyboard" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = AA00000700000000000000CC /* AnkyKeyboard */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		4E6E6DC72F5C4238007957FA /* Anky */ = {
@@ -45,6 +80,19 @@
 			path = AnkyUITests;
 			sourceTree = "<group>";
 		};
+		AA00000200000000000000CC /* AnkyKeyboard */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				AA00001000000000000000CC /* Exceptions for "AnkyKeyboard" folder in "AnkyKeyboard" target */,
+			);
+			path = AnkyKeyboard;
+			sourceTree = "<group>";
+		};
+		AA00000300000000000000CC /* Shared */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = Shared;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -52,6 +100,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				BB00000100000000000000CC /* StripeApplePay in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -69,6 +118,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA00000500000000000000CC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -76,6 +132,8 @@
 			isa = PBXGroup;
 			children = (
 				4E6E6DC72F5C4238007957FA /* Anky */,
+				AA00000200000000000000CC /* AnkyKeyboard */,
+				AA00000300000000000000CC /* Shared */,
 				4E6E6DD72F5C423A007957FA /* AnkyTests */,
 				4E6E6DE12F5C423A007957FA /* AnkyUITests */,
 				4E6E6DC62F5C4238007957FA /* Products */,
@@ -86,6 +144,7 @@
 			isa = PBXGroup;
 			children = (
 				4E6E6DC52F5C4238007957FA /* Anky.app */,
+				AA00000100000000000000CC /* AnkyKeyboard.appex */,
 				4E6E6DD42F5C423A007957FA /* AnkyTests.xctest */,
 				4E6E6DDE2F5C423A007957FA /* AnkyUITests.xctest */,
 			);
@@ -103,16 +162,20 @@
 				4E6E6DC22F5C4238007957FA /* Frameworks */,
 				A1B2C3D4E5F60718293A4B5C /* Embed PrivySDK */,
 				4E6E6DC32F5C4238007957FA /* Resources */,
+				AA00000D00000000000000CC /* Embed App Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				AA00000C00000000000000CC /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				4E6E6DC72F5C4238007957FA /* Anky */,
+				AA00000300000000000000CC /* Shared */,
 			);
 			name = Anky;
 			packageProductDependencies = (
+				BB00000300000000000000CC /* StripeApplePay */,
 			);
 			productName = Anky;
 			productReference = 4E6E6DC52F5C4238007957FA /* Anky.app */;
@@ -164,6 +227,29 @@
 			productReference = 4E6E6DDE2F5C423A007957FA /* AnkyUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		AA00000700000000000000CC /* AnkyKeyboard */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA00000A00000000000000CC /* Build configuration list for PBXNativeTarget "AnkyKeyboard" */;
+			buildPhases = (
+				AA00000400000000000000CC /* Sources */,
+				AA00000500000000000000CC /* Frameworks */,
+				AA00000600000000000000CC /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				AA00000200000000000000CC /* AnkyKeyboard */,
+				AA00000300000000000000CC /* Shared */,
+			);
+			name = AnkyKeyboard;
+			packageProductDependencies = (
+			);
+			productName = AnkyKeyboard;
+			productReference = AA00000100000000000000CC /* AnkyKeyboard.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -185,6 +271,9 @@
 						CreatedOnToolsVersion = 26.3;
 						TestTargetID = 4E6E6DC42F5C4238007957FA;
 					};
+					AA00000700000000000000CC = {
+						CreatedOnToolsVersion = 26.3;
+					};
 				};
 			};
 			buildConfigurationList = 4E6E6DC02F5C4238007957FA /* Build configuration list for PBXProject "Anky" */;
@@ -196,12 +285,16 @@
 			);
 			mainGroup = 4E6E6DBC2F5C4238007957FA;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				BB00000200000000000000CC /* XCRemoteSwiftPackageReference "stripe-ios-spm" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4E6E6DC62F5C4238007957FA /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				4E6E6DC42F5C4238007957FA /* Anky */,
+				AA00000700000000000000CC /* AnkyKeyboard */,
 				4E6E6DD32F5C423A007957FA /* AnkyTests */,
 				4E6E6DDD2F5C423A007957FA /* AnkyUITests */,
 			);
@@ -224,6 +317,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		4E6E6DDC2F5C423A007957FA /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA00000600000000000000CC /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -279,6 +379,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA00000400000000000000CC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -291,6 +398,11 @@
 			isa = PBXTargetDependency;
 			target = 4E6E6DC42F5C4238007957FA /* Anky */;
 			targetProxy = 4E6E6DDF2F5C423A007957FA /* PBXContainerItemProxy */;
+		};
+		AA00000C00000000000000CC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA00000700000000000000CC /* AnkyKeyboard */;
+			targetProxy = AA00000B00000000000000CC /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -414,10 +526,12 @@
 		4E6E6DE92F5C423A007957FA /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Anky.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = 84V63LKV45;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -441,7 +555,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -466,10 +580,12 @@
 		4E6E6DEA2F5C423A007957FA /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = YES;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Anky.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = 84V63LKV45;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -493,7 +609,7 @@
 				"INFOPLIST_KEY_UIStatusBarStyle[sdk=iphonesimulator*]" = UIStatusBarStyleDefault;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
@@ -520,10 +636,10 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = 84V63LKV45;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jpfraneto.AnkyTests;
@@ -546,10 +662,10 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = 84V63LKV45;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jpfraneto.AnkyTests;
@@ -571,10 +687,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = 84V63LKV45;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jpfraneto.AnkyUITests;
@@ -596,10 +712,10 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = 84V63LKV45;
 				GENERATE_INFOPLIST_FILE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 26.2;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MACOSX_DEPLOYMENT_TARGET = 26.2;
 				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.jpfraneto.AnkyUITests;
@@ -614,6 +730,64 @@
 				TARGETED_DEVICE_FAMILY = "1,2,7";
 				TEST_TARGET_NAME = Anky;
 				XROS_DEPLOYMENT_TARGET = 26.2;
+			};
+			name = Release;
+		};
+		AA00000800000000000000CC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = AnkyKeyboard/AnkyKeyboard.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 7;
+				DEVELOPMENT_TEAM = 84V63LKV45;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AnkyKeyboard/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jpfraneto.Anky.AnkyKeyboard;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		AA00000900000000000000CC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = AnkyKeyboard/AnkyKeyboard.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 7;
+				DEVELOPMENT_TEAM = 84V63LKV45;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = AnkyKeyboard/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.1;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jpfraneto.Anky.AnkyKeyboard;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -656,7 +830,35 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		AA00000A00000000000000CC /* Build configuration list for PBXNativeTarget "AnkyKeyboard" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA00000800000000000000CC /* Debug */,
+				AA00000900000000000000CC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		BB00000200000000000000CC /* XCRemoteSwiftPackageReference "stripe-ios-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/stripe/stripe-ios-spm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 25.9.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		BB00000300000000000000CC /* StripeApplePay */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BB00000200000000000000CC /* XCRemoteSwiftPackageReference "stripe-ios-spm" */;
+			productName = StripeApplePay;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 4E6E6DBD2F5C4238007957FA /* Project object */;
 }

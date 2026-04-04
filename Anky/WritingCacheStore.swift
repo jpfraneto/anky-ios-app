@@ -65,6 +65,33 @@ enum WritingCacheStore {
         return migrated
     }
 
+    static func updateResponse(for id: String, response: String) -> [CachedWritingEntry] {
+        let trimmedResponse = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedResponse.isEmpty else { return load() }
+
+        let updated = load().map { entry in
+            guard entry.id == id else { return entry }
+            return CachedWritingEntry(
+                id: entry.id,
+                prompt: entry.prompt,
+                content: entry.content,
+                durationSeconds: entry.durationSeconds,
+                wordCount: entry.wordCount,
+                isAnky: entry.isAnky,
+                response: trimmedResponse,
+                ankyId: entry.ankyId,
+                ankyTitle: entry.ankyTitle,
+                ankyImagePath: entry.ankyImagePath,
+                createdAt: entry.createdAt,
+                flowScore: entry.flowScore,
+                syncState: entry.syncState
+            )
+        }
+
+        save(updated)
+        return updated
+    }
+
     static func clear() {
         UserDefaults.standard.removeObject(forKey: cacheKey)
     }

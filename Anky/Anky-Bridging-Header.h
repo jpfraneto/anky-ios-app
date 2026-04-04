@@ -1,2 +1,2 @@
-#include "Crypto/Vendored/WalletKit/secp256k1/include/secp256k1.h"
-#include "Crypto/Vendored/WalletKit/keccaktiny/include/keccak-tiny.h"
+// Anky Bridging Header
+// secp256k1 and keccak-tiny removed — Solana uses Ed25519 via CryptoKit.

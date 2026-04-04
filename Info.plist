@@ -26,6 +26,14 @@
 				<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>anky-deeplink</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>anky</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
@@ -48,5 +56,17 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>Anky uses the camera as a mirror during your first writing session</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Anky uses Face ID to protect your writings</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Anky uses the microphone for voice features</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Anky uses speech recognition for writing assistance</string>
 </dict>
 </plist>

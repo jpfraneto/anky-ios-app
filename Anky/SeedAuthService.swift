@@ -30,7 +30,8 @@ final class SeedAuthService {
     ) async throws -> UserProfile {
         let challenge = try await AnkyAPI.shared.authChallenge(walletAddress: walletAddress)
         let signatureData = try identityManager.sign(message: Data(challenge.message.utf8))
-        let signature = signatureData.hexStringPrefixed
+        // Ed25519 signatures are sent as base58
+        let signature = Base58.encode(signatureData)
         let verified = try await AnkyAPI.shared.verifyAuthChallenge(
             walletAddress: walletAddress,
             challengeID: challenge.challengeId,

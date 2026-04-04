@@ -1,0 +1,54 @@
+LOCAL IDENTITY
+mnemonic_word_count: 24
+wallet_address: 0x7916707ea9984bcF31Ed09Df1876f694e9cf99C4
+restore_wallet_address: 0x7916707ea9984bcF31Ed09Df1876f694e9cf99C4
+reboot_wallet_address: 0x4Da948b2F950DA8b96799226870178A68B9Ac3A0
+derivation_path: m/44'/60'/0'/0/0
+
+REQUEST POST https://anky.app/swift/v2/auth/challenge
+{"wallet_address":"0x7916707ea9984bcF31Ed09Df1876f694e9cf99C4"}
+RESPONSE 200 https://anky.app/swift/v2/auth/challenge
+{"ok":true,"challenge_id":"b5758d3d-cf9e-4f28-b8ef-fd8fd2b320c8","message":"anky.app base identity sign in\n\naddress: 0x7916707ea9984bcf31ed09df1876f694e9cf99c4\nchallenge id: b5758d3d-cf9e-4f28-b8ef-fd8fd2b320c8\nnonce: 579e1e4e67228aa94b9aa018f49914d989b085e544c216cffa66f581e9a6575c\nchain id: 8453\n\nsign this only inside the anky app.","expires_at":"2026-03-17 00:25:01"}
+
+REQUEST POST https://anky.app/swift/v2/auth/verify
+{"challenge_id":"b5758d3d-cf9e-4f28-b8ef-fd8fd2b320c8","signature":"0xc8b5e322f2667b647b8562d442eb87aa693c414213ab088bb239a3941b31408138b013ff99e14cb02106e689ce5685745af1764d5a67ab8faad18bebba722d101b","wallet_address":"0x7916707ea9984bcF31Ed09Df1876f694e9cf99C4"}
+RESPONSE 200 https://anky.app/swift/v2/auth/verify
+{"ok":true,"session_token":"74bc5bde-5249-4911-9c7f-dadbe22c359d","user_id":"62b9bb14-5bf3-45a5-b9c6-04bf4b8931b2","wallet_address":"0x7916707ea9984bcf31ed09df1876f694e9cf99c4"}
+
+REQUEST GET https://anky.app/swift/v2/me
+(no body)
+RESPONSE 200 https://anky.app/swift/v2/me
+{"user_id":"62b9bb14-5bf3-45a5-b9c6-04bf4b8931b2","wallet_address":"0x7916707ea9984bcf31ed09df1876f694e9cf99c4","total_writings":0,"total_ankys":0}
+
+REQUEST POST https://anky.app/swift/v2/write
+{"duration":120,"keystroke_deltas":[110,80,420],"session_id":"ios-live-short-53d86879-42b1-49ba-91d7-728219f72300","text":"ios-live-short-dec0a13a-dd9e-4e19-a448-885f2f024349 probe word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word"}
+RESPONSE 200 https://anky.app/swift/v2/write
+{"ok":true,"session_id":"ios-live-short-53d86879-42b1-49ba-91d7-728219f72300","is_anky":false,"word_count":182,"flow_score":0.0,"persisted":false}
+
+REQUEST GET https://anky.app/swift/v2/writings
+(no body)
+RESPONSE 200 https://anky.app/swift/v2/writings
+[]
+writings_marker_check[1]: marker=ios-live-short-dec0a13a-dd9e-4e19-a448-885f2f024349 present=false
+
+REQUEST POST https://anky.app/swift/v2/write
+{"duration":481,"keystroke_deltas":[110,80,420,95],"session_id":"ios-live-real-410969a2-d929-4d15-a3e1-a8da6048af55","text":"ios-live-real-1a204b09-4698-4773-ba85-62d1330de539 probe word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word"}
+RESPONSE 200 https://anky.app/swift/v2/write
+{"ok":true,"session_id":"ios-live-real-410969a2-d929-4d15-a3e1-a8da6048af55","is_anky":true,"word_count":322,"flow_score":0.0,"persisted":true,"anky_id":"acd31f92-5d71-41c7-996c-84f455dbdc81","wallet_address":"0x7916707ea9984bcf31ed09df1876f694e9cf99c4"}
+
+REQUEST GET https://anky.app/swift/v2/writings
+(no body)
+RESPONSE 200 https://anky.app/swift/v2/writings
+[{"id":"ios-live-real-410969a2-d929-4d15-a3e1-a8da6048af55","content":"ios-live-real-1a204b09-4698-4773-ba85-62d1330de539 probe word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word","duration_seconds":481.0,"word_count":322,"is_anky":true,"created_at":"2026-03-17 00:15:02"}]
+writings_marker_check[1]: marker=ios-live-real-1a204b09-4698-4773-ba85-62d1330de539 present=true
+
+SUMMARY
+wallet_address: 0x7916707ea9984bcF31Ed09Df1876f694e9cf99C4
+challenge_id: b5758d3d-cf9e-4f28-b8ef-fd8fd2b320c8
+verify_user_id: 62b9bb14-5bf3-45a5-b9c6-04bf4b8931b2
+me.total_writings: 0
+me.total_ankys: 0
+short.persisted: Optional(false)
+short.in_cloud_history: false
+real.persisted: Optional(true)
+real.in_cloud_history: true

@@ -84,24 +84,103 @@ struct UserProfile: Codable {
 
 // MARK: - Writing
 
+struct ChatHistoryItem: Codable, Equatable {
+    let role: String
+    let content: String
+}
+
+struct QuickChatRequest: Codable {
+    let writing: String
+    let message: String
+    let history: [ChatHistoryItem]
+}
+
+struct QuickChatResponse: Codable {
+    let response: String
+}
+
 struct MobileWriteRequest: Codable {
     let text: String
     let duration: Double
     let sessionId: String?
     let keystrokeDeltas: [Double]?
+    let isCheckpoint: Bool?
 }
 
 struct MobileWriteResponse: Codable {
     let ok: Bool
     let sessionId: String
-    let isAnky: Bool
+    let outcome: String?
     let wordCount: Int
+    let durationSeconds: Double?
     let flowScore: Double?
     let persisted: Bool?
-    let response: String?
-    let ankyId: String?
+    let spawned: SpawnedArtifacts?
     let walletAddress: String?
+    let statusUrl: String?
+    let ankyResponse: String?
+    let nextPrompt: String?
+    let mood: String?
     let error: String?
+
+    var isAnky: Bool {
+        outcome == "anky"
+    }
+
+    var ankyId: String? {
+        spawned?.ankyId
+    }
+}
+
+struct SpawnedArtifacts: Codable {
+    let ankyId: String?
+    let feedback: Bool?
+    let meditation: Bool?
+    let breathwork: Bool?
+    let cuentacuentos: Bool?
+}
+
+struct WritingStatusResponse: Codable {
+    let sessionId: String
+    let isAnky: Bool?
+    let durationSeconds: Double?
+    let wordCount: Int?
+    let anky: AnkyArtifactStatus?
+    let cuentacuentos: CuentacuentosArtifactStatus?
+    let meditation: ArtifactStatus?
+    let breathwork: BreathworkArtifactStatus?
+    let ankyResponse: String?
+    let nextPrompt: String?
+    let mood: String?
+}
+
+struct AnkyArtifactStatus: Codable {
+    let id: String?
+    let status: String
+    let imageUrl: String?
+    let title: String?
+    let reflection: String?
+}
+
+struct CuentacuentosArtifactStatus: Codable {
+    let id: String?
+    let status: String
+    let chakra: Int?
+    let kingdom: String?
+    let city: String?
+    let title: String?
+    let translationsDone: [String]?
+    let imagesTotal: Int?
+    let imagesDone: Int?
+}
+
+struct ArtifactStatus: Codable {
+    let status: String
+}
+
+struct BreathworkArtifactStatus: Codable {
+    let status: String
+    let style: String?
 }
 
 struct WritingItem: Codable, Identifiable {
@@ -259,6 +338,132 @@ struct CachedWritingEntry: Codable, Identifiable, Equatable {
     }()
 }
 
+// MARK: - Prompts
+
+struct PromptResponse: Codable {
+    let id: String
+    let text: String
+}
+
+// MARK: - Altar
+
+struct AltarState: Codable, Equatable {
+    let imageUrl: String
+    let totalBurnedUsdc: Int
+    let totalBurns: Int
+    let topBurners: [AltarBurner]
+    let recentBurns: [RecentAltarBurn]
+    let stripePublishableKey: String?
+    let network: String?
+    let treasuryAddress: String?
+    let usdcTokenAddress: String?
+
+    var remoteImageURL: URL? {
+        if imageUrl.hasPrefix("http://") || imageUrl.hasPrefix("https://") {
+            return URL(string: imageUrl)
+        }
+
+        let normalizedPath = imageUrl.hasPrefix("/") ? imageUrl : "/\(imageUrl)"
+        return URL(string: "https://anky.app\(normalizedPath)")
+    }
+}
+
+struct AltarBurner: Codable, Equatable, Identifiable {
+    let userIdentifier: String
+    let displayName: String
+    let totalUsdc: Int
+    let burnCount: Int
+
+    var id: String { userIdentifier }
+}
+
+struct RecentAltarBurn: Codable, Equatable, Identifiable {
+    let displayName: String
+    let amountUsdc: Int
+    let createdAt: String
+
+    var id: String { "\(displayName)-\(createdAt)-\(amountUsdc)" }
+}
+
+struct AltarPaymentIntentRequest: Codable, Equatable {
+    let amountCents: Int
+}
+
+struct AltarPaymentIntentResponse: Codable, Equatable {
+    let clientSecret: String
+    let paymentIntentId: String
+}
+
+struct RecordApplePayBurnRequest: Codable, Equatable {
+    let paymentIntentId: String
+    let solanaAddress: String
+    let displayName: String?
+}
+
+// MARK: - QR Seal Auth
+
+struct QRSealChallenge: Identifiable, Equatable {
+    let token: String
+
+    var id: String { token }
+}
+
+struct QRSealRequest: Codable, Equatable {
+    let token: String
+    let signature: String
+    let solanaAddress: String
+}
+
+struct QRSealResponse: Codable, Equatable {
+    let ok: Bool
+    let solanaAddress: String
+}
+
+// MARK: - Child Worlds
+
+struct ChildProfile: Codable, Identifiable, Equatable {
+    let id: String
+    let name: String
+    let birthdate: String
+    let derivedWalletAddress: String
+    let emojiPattern: [String]
+    let parentWalletAddress: String
+    let createdAt: String
+}
+
+struct Cuentacuentos: Codable, Identifiable, Equatable {
+    let id: String
+    let writingId: String
+    let title: String
+    let content: String
+    let guidancePhases: [GuidancePhase]
+    let played: Bool
+    let generatedAt: String
+
+    // Translated full-text content
+    let contentEs: String?
+    let contentZh: String?
+    let contentHi: String?
+    let contentAr: String?
+
+    func translatedContent(for languageId: String) -> String {
+        switch languageId {
+        case "es": return contentEs ?? content
+        case "zh": return contentZh ?? content
+        case "hi": return contentHi ?? content
+        case "ar": return contentAr ?? content
+        default: return content
+        }
+    }
+}
+
+struct CreateChildRequest: Codable, Equatable {
+    let name: String
+    let birthdate: String
+    let derivedWalletAddress: String
+    let emojiPattern: [String]
+}
+
 private struct DynamicCodingKeys: CodingKey {
     var stringValue: String
     var intValue: Int?
@@ -356,7 +561,18 @@ struct LocalWritingCapture: Equatable {
             text: text,
             duration: duration,
             sessionId: sessionId,
-            keystrokeDeltas: keystrokeDeltas
+            keystrokeDeltas: keystrokeDeltas,
+            isCheckpoint: nil
+        )
+    }
+
+    func checkpointRequest(text: String, duration: Double, keystrokeDeltas: [Double]) -> MobileWriteRequest {
+        MobileWriteRequest(
+            text: text,
+            duration: duration,
+            sessionId: sessionId,
+            keystrokeDeltas: keystrokeDeltas,
+            isCheckpoint: true
         )
     }
 
@@ -371,239 +587,172 @@ struct LocalWritingCapture: Equatable {
     }
 }
 
-// MARK: - Guidance
+// MARK: - Voice Recordings
 
-enum GuidancePhaseKind: String {
-    case narration
-    case breathing
-    case hold
-    case rest
-    case bodyScan = "body_scan"
-    case visualization
+enum VoiceRecordingStatus: String, Codable {
+    case pending
+    case approved
+    case rejected
 }
+
+struct VoiceRecording: Codable, Identifiable {
+    let id: String
+    let attemptNumber: Int
+    let status: VoiceRecordingStatus
+    let durationSeconds: Double
+    let createdAt: String
+    let audioUrl: String?
+    let rejectionReason: String?
+    let language: String?
+    let fullListenCount: Int?
+    let userId: String?
+    let username: String?
+
+    var createdAtDate: Date? {
+        ISO8601DateFormatter().date(from: createdAt)
+    }
+
+    var durationLabel: String {
+        let total = max(Int(durationSeconds.rounded(.down)), 0)
+        let m = total / 60
+        let s = total % 60
+        return String(format: "%d:%02d", m, s)
+    }
+
+    var statusLabel: String {
+        switch status {
+        case .pending: return "pending"
+        case .approved: return "approved"
+        case .rejected: return "rejected"
+        }
+    }
+
+    var listenCountLabel: String {
+        let count = fullListenCount ?? 0
+        return count == 1 ? "1 listen" : "\(count) listens"
+    }
+}
+
+struct VoiceRecordingCreateResponse: Codable {
+    let recordingId: String
+    let status: String
+    let uploadUrl: String
+}
+
+struct StoryVoice: Codable {
+    let recordingId: String
+    let audioUrl: String
+    let language: String
+    let durationSeconds: Double
+    let userId: String?
+    let username: String?
+}
+
+// MARK: - Settings
+
+struct UserSettingsResponse: Codable {
+    let preferredLanguage: String?
+    let fontSize: Int?
+    let fontFamily: String?
+    let theme: String?
+    let idleTimeout: Int?
+    let keyboardLayout: String?
+}
+
+struct UserSettingsUpdate: Codable {
+    var preferredLanguage: String?
+    var fontSize: Int?
+}
+
+struct DeviceRegistration: Encodable {
+    let token: String
+    let platform: String
+}
+
+// MARK: - Mirror Mint (Solana cNFT, backend-driven)
+
+struct MirrorMintRequest: Codable {
+    let writingSessionId: String
+    let recipient: String
+}
+
+struct MirrorMintResponse: Codable {
+    let success: Bool
+    let mirrorId: String?
+    let kingdom: String?
+    let kingdomChakra: String?
+    let kingdomId: Int?
+    let txSignature: String?
+    let items: MirrorItemsWrapper?
+    let imageUrl: String?
+    let error: String?
+    let alreadyMinted: Bool?
+    let existingTxSignature: String?
+}
+
+struct MirrorItemsWrapper: Codable {
+    let items: [KingdomItem]?
+}
+
+struct KingdomItem: Codable, Identifiable, Hashable {
+    let kingdom: String
+    let chakra: String
+    let name: String
+    let description: String
+    let material: String
+
+    var id: String { "\(kingdom)-\(name)" }
+
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+
+    static func == (lhs: KingdomItem, rhs: KingdomItem) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
+struct UserItemsResponse: Codable {
+    let mirrorId: String?
+    let items: [KingdomItem]?
+    let source: String?      // "mirror", "derived", or "none"
+    let message: String?
+}
+
+// MARK: - Guidance
 
 struct GuidancePhase: Codable, Hashable, Identifiable {
     let name: String
     let phaseType: String
     let durationSeconds: Int
     let narration: String
-    let inhaleSeconds: Double?
-    let exhaleSeconds: Double?
-    let holdSeconds: Double?
-    let reps: Int?
+    let imageUrl: String?
+
+    // Translated narrations
+    let narrationEs: String?
+    let narrationZh: String?
+    let narrationHi: String?
+    let narrationAr: String?
 
     var id: String {
         "\(name)-\(durationSeconds)-\(phaseType)"
     }
 
-    var kind: GuidancePhaseKind {
-        GuidancePhaseKind(rawValue: phaseType) ?? .narration
+    func translatedNarration(for languageId: String) -> String {
+        switch languageId {
+        case "es": return narrationEs ?? narration
+        case "zh": return narrationZh ?? narration
+        case "hi": return narrationHi ?? narration
+        case "ar": return narrationAr ?? narration
+        default: return narration
+        }
     }
 }
 
 struct GuidanceSession: Codable, Equatable, Identifiable {
     let id: String?
-    let style: String?
     let title: String
     let description: String
     let durationSeconds: Int
-    let backgroundBeatBpm: Int
     let phases: [GuidancePhase]
-}
-
-struct ReadyResponse: Codable, Equatable {
-    let status: String
-    let session: GuidanceSession?
-    let style: String?
-}
-
-struct MeditationStartRequest: Codable {
-    let durationMinutes: Int
-}
-
-struct MeditationStartResponse: Codable {
-    let sessionId: String
-    let durationTarget: Int
-}
-
-struct MeditationCompleteRequest: Codable {
-    let sessionId: String
-    let actualSeconds: Int
-    let completed: Bool
-}
-
-struct MeditationCompleteResponse: Codable {
-    let ok: Bool
-    let totalMeditations: Int
-    let currentStreak: Int
-}
-
-struct MeditationHistoryItem: Codable, Identifiable {
-    let id: String
-    let durationTarget: Int
-    let durationActual: Int?
-    let completed: Bool
-    let createdAt: String
-}
-
-struct BreathworkCompleteRequest: Codable {
-    let sessionId: String
-    let notes: String?
-}
-
-struct BreathworkHistoryItem: Codable, Identifiable {
-    let id: String
-    let sessionId: String
-    let style: String
-    let completedAt: String
-}
-
-struct BreathworkHistoryResponse: Codable {
-    let history: [BreathworkHistoryItem]
-}
-
-// MARK: - Sadhana
-
-struct SadhanaCommitmentRequest: Codable {
-    let title: String
-    let description: String?
-    let frequency: String
-    let durationMinutes: Int
-    let targetDays: Int
-}
-
-struct SadhanaCommitment: Codable, Identifiable {
-    let id: String
-    let title: String
-    let description: String?
-    let frequency: String
-    let durationMinutes: Int
-    let targetDays: Int
-    let startDate: String
-    let isActive: Bool
-    let createdAt: String
-    let totalCheckins: Int
-    let completedCheckins: Int
-}
-
-struct SadhanaCheckinRequest: Codable {
-    let completed: Bool
-    let notes: String?
-    let date: String?
-}
-
-struct SadhanaCheckin: Codable, Identifiable {
-    let id: String
-    let date: String
-    let completed: Bool
-    let notes: String?
-    let createdAt: String
-}
-
-struct SadhanaDetail: Codable {
-    let id: String
-    let title: String
-    let description: String?
-    let frequency: String
-    let durationMinutes: Int
-    let targetDays: Int
-    let startDate: String
-    let isActive: Bool
-    let createdAt: String
-    let checkins: [SadhanaCheckin]
-}
-
-// MARK: - Facilitators
-
-struct Facilitator: Codable, Identifiable {
-    let id: String
-    let name: String
-    let bio: String
-    let specialties: [String]
-    let approach: String?
-    let sessionRateUsd: Double
-    let bookingUrl: String?
-    let contactMethod: String?
-    let profileImageUrl: String?
-    let location: String?
-    let languages: [String]
-    let status: String
-    let avgRating: Double
-    let totalReviews: Int
-    let totalSessions: Int
-    let matchReason: String?
-}
-
-struct FacilitatorRecommendationResponse: Codable {
-    let facilitators: [Facilitator]
-    let message: String?
-}
-
-struct FacilitatorReview: Codable, Identifiable {
-    let id: String
-    let rating: Int
-    let reviewText: String?
-    let createdAt: String
-}
-
-struct FacilitatorDetail: Codable, Identifiable {
-    let id: String
-    let name: String
-    let bio: String
-    let specialties: [String]
-    let approach: String?
-    let sessionRateUsd: Double
-    let bookingUrl: String?
-    let contactMethod: String?
-    let profileImageUrl: String?
-    let location: String?
-    let languages: [String]
-    let status: String
-    let avgRating: Double
-    let totalReviews: Int
-    let totalSessions: Int
-    let matchReason: String?
-    let reviews: [FacilitatorReview]
-}
-
-struct FacilitatorApplicationRequest: Codable {
-    let name: String
-    let bio: String
-    let specialties: [String]
-    let approach: String?
-    let sessionRateUsd: Double
-    let bookingUrl: String?
-    let contactMethod: String?
-    let profileImageUrl: String?
-    let location: String?
-    let languages: [String]
-}
-
-struct FacilitatorApplicationResponse: Codable {
-    let ok: Bool
-    let id: String
-    let status: String
-    let message: String
-}
-
-struct FacilitatorReviewRequest: Codable {
-    let rating: Int
-    let reviewText: String?
-}
-
-struct FacilitatorBookingRequest: Codable {
-    let paymentTxHash: String?
-    let stripePaymentId: String?
-    let shareContext: Bool
-}
-
-struct FacilitatorBookingResponse: Codable {
-    let ok: Bool
-    let bookingId: String
-    let facilitatorName: String
-    let amountUsd: Double
-    let platformFeeUsd: Double
-    let facilitatorReceivesUsd: Double
-    let bookingUrl: String?
-    let contactMethod: String?
 }

@@ -96,7 +96,7 @@ actor OfflineQueue {
     }
 }
 
-private extension PendingAction {
+extension PendingAction {
     nonisolated var isObsoleteShortWrite: Bool {
         guard path == "/write", method == Method.post.rawValue, let bodyData else {
             return false
@@ -113,11 +113,11 @@ private extension PendingAction {
         return !qualifiesForAnky(text: text, duration: duration)
     }
 
-    nonisolated private func qualifiesForAnky(text: String, duration: Double) -> Bool {
+    nonisolated func qualifiesForAnky(text: String, duration: Double) -> Bool {
         duration >= 480 && wordCount(in: text) >= 300
     }
 
-    nonisolated private func wordCount(in text: String) -> Int {
+    nonisolated func wordCount(in text: String) -> Int {
         text
             .split { $0.isWhitespace || $0.isNewline }
             .count

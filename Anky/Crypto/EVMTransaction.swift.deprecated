@@ -1,0 +1,197 @@
+//
+//  EVMTransaction.swift
+//  Anky
+//
+//  RLP encoder, ABI encoder, and EIP-1559 transaction builder.
+//  No external dependencies — uses SeedIdentityCrypto for keccak256 and signing.
+//
+
+import Foundation
+
+// MARK: - RLP Encoder
+
+enum RLP {
+    case data(Data)
+    case list([RLP])
+
+    func encode() -> Data {
+        switch self {
+        case .data(let bytes):
+            if bytes.count == 1 && bytes[0] < 0x80 {
+                return bytes
+            }
+            return encodeLength(bytes.count, offset: 0x80) + bytes
+
+        case .list(let items):
+            let payload = items.reduce(Data()) { $0 + $1.encode() }
+            return encodeLength(payload.count, offset: 0xc0) + payload
+        }
+    }
+
+    private func encodeLength(_ length: Int, offset: UInt8) -> Data {
+        if length < 56 {
+            return Data([offset + UInt8(length)])
+        }
+        let lengthBytes = bigEndianBytes(of: length)
+        return Data([offset + 55 + UInt8(lengthBytes.count)]) + lengthBytes
+    }
+
+    private func bigEndianBytes(of value: Int) -> Data {
+        var v = value
+        var bytes = Data()
+        while v > 0 {
+            bytes.insert(UInt8(v & 0xff), at: 0)
+            v >>= 8
+        }
+        return bytes.isEmpty ? Data([0]) : bytes
+    }
+}
+
+// MARK: - ABI Encoder
+
+enum ABIEncoder {
+    /// Encodes calldata for `birthSoul(string,string,uint256,bytes)`
+    static func encodeBirthSoul(
+        sessionCID: String,
+        metadataURI: String,
+        deadline: UInt64,
+        signature: Data
+    ) -> Data {
+        // Function selector: first 4 bytes of keccak256("birthSoul(string,string,uint256,bytes)")
+        let selectorHash = SeedIdentityCrypto.keccak256(Data("birthSoul(string,string,uint256,bytes)".utf8))
+        let selector = selectorHash.prefix(4)
+
+        let sessionCIDData = Data(sessionCID.utf8)
+        let metadataURIData = Data(metadataURI.utf8)
+
+        // Head: 4 offsets (string, string, uint256, bytes)
+        // Slot 0: offset to sessionCID (dynamic) = 4 * 32 = 128
+        // Slot 1: offset to metadataURI (dynamic)
+        // Slot 2: deadline (static, inline)
+        // Slot 3: offset to signature (dynamic)
+
+        let sessionCIDPadded = padRight(sessionCIDData)
+        let metadataURIPadded = padRight(metadataURIData)
+        let signaturePadded = padRight(signature)
+
+        // Calculate offsets
+        let sessionCIDOffset: UInt64 = 4 * 32  // 128
+        let sessionCIDTotalWords = 1 + UInt64(sessionCIDPadded.count / 32) // length word + data words
+        let metadataURIOffset = sessionCIDOffset + sessionCIDTotalWords * 32
+        let metadataURITotalWords = 1 + UInt64(metadataURIPadded.count / 32)
+        let signatureOffset = metadataURIOffset + metadataURITotalWords * 32
+
+        var calldata = Data(selector)
+
+        // Head
+        calldata += encodeUint256(sessionCIDOffset)
+        calldata += encodeUint256(metadataURIOffset)
+        calldata += encodeUint256(UInt64(deadline))
+        calldata += encodeUint256(signatureOffset)
+
+        // Tail: sessionCID
+        calldata += encodeUint256(UInt64(sessionCIDData.count))
+        calldata += sessionCIDPadded
+
+        // Tail: metadataURI
+        calldata += encodeUint256(UInt64(metadataURIData.count))
+        calldata += metadataURIPadded
+
+        // Tail: signature
+        calldata += encodeUint256(UInt64(signature.count))
+        calldata += signaturePadded
+
+        return calldata
+    }
+
+    static func encodeUint256(_ value: UInt64) -> Data {
+        var data = Data(repeating: 0, count: 24)
+        var v = value.bigEndian
+        data.append(contentsOf: withUnsafeBytes(of: &v) { Data($0) })
+        return data
+    }
+
+    /// Pad data to a multiple of 32 bytes (right-padded with zeros).
+    private static func padRight(_ data: Data) -> Data {
+        let remainder = data.count % 32
+        if remainder == 0 && !data.isEmpty {
+            return data
+        }
+        return data + Data(repeating: 0, count: 32 - remainder)
+    }
+}
+
+// MARK: - EIP-1559 Transaction
+
+struct EVMTransaction {
+    let chainId: UInt64
+    let nonce: UInt64
+    let maxPriorityFeePerGas: UInt64
+    let maxFeePerGas: UInt64
+    let gasLimit: UInt64
+    let to: Data  // 20 bytes
+    let value: UInt64
+    let calldata: Data
+    let accessList: [RLP] = []
+
+    /// Returns the signing hash: keccak256(0x02 || RLP([chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList]))
+    func signingHash() -> Data {
+        let fields = rlpFields()
+        let encoded = RLP.list(fields).encode()
+        let payload = Data([0x02]) + encoded
+        return SeedIdentityCrypto.keccak256(payload)
+    }
+
+    /// Sign the transaction and return the raw serialized bytes ready for eth_sendRawTransaction.
+    /// Returns: 0x02 || RLP([chainId, nonce, maxPriorityFeePerGas, maxFeePerGas, gasLimit, to, value, data, accessList, v, r, s])
+    func signed(privateKey: Data) throws -> Data {
+        let digest = signingHash()
+
+        // signDigest returns 64 bytes r||s + 1 byte recovery (27 or 28 based)
+        let sig = try SeedIdentityCrypto.signDigest(digest, privateKeyData: privateKey)
+        let r = Data(sig.prefix(32))
+        let s = Data(sig[32..<64])
+        // EIP-1559 uses raw recovery ID (0 or 1), signDigest adds 27
+        let v = sig[64] >= 27 ? sig[64] - 27 : sig[64]
+
+        var fields = rlpFields()
+        fields.append(.data(Data([v])))  // yParity
+        fields.append(.data(trimLeadingZeros(r)))
+        fields.append(.data(trimLeadingZeros(s)))
+
+        let encoded = RLP.list(fields).encode()
+        return Data([0x02]) + encoded
+    }
+
+    private func rlpFields() -> [RLP] {
+        [
+            .data(rlpUint(chainId)),
+            .data(rlpUint(nonce)),
+            .data(rlpUint(maxPriorityFeePerGas)),
+            .data(rlpUint(maxFeePerGas)),
+            .data(rlpUint(gasLimit)),
+            .data(to),
+            .data(rlpUint(value)),
+            .data(calldata),
+            .list(accessList),
+        ]
+    }
+
+    private func rlpUint(_ value: UInt64) -> Data {
+        if value == 0 { return Data() }
+        var v = value
+        var bytes = Data()
+        while v > 0 {
+            bytes.insert(UInt8(v & 0xff), at: 0)
+            v >>= 8
+        }
+        return bytes
+    }
+
+    private func trimLeadingZeros(_ data: Data) -> Data {
+        guard let firstNonZero = data.firstIndex(where: { $0 != 0 }) else {
+            return Data()
+        }
+        return Data(data[firstNonZero...])
+    }
+}

@@ -1,133 +1,237 @@
 import AVFoundation
 import Combine
+import MediaPlayer
 import SwiftUI
 import UIKit
 
-enum GuidancePlaybackMode: Equatable {
-    case meditation
-    case breathwork(style: String?)
+struct StoryLanguage: Identifiable, Hashable {
+    let id: String
+    let label: String
+    let voices: [String]
 
-    var accent: Color {
-        switch self {
-        case .meditation:
-            return .ankyGold
-        case .breathwork:
-            return .ankyPurpleSoft
+    static let available: [StoryLanguage] = [
+        StoryLanguage(id: "en", label: "English", voices: ["en-US", "en-GB", "en-AU", "en"]),
+        StoryLanguage(id: "es", label: "Español", voices: ["es-MX", "es-ES", "es-US", "es"]),
+        StoryLanguage(id: "pt", label: "Português", voices: ["pt-BR", "pt-PT", "pt"]),
+        StoryLanguage(id: "fr", label: "Français", voices: ["fr-FR", "fr-CA", "fr"]),
+        StoryLanguage(id: "de", label: "Deutsch", voices: ["de-DE", "de"]),
+        StoryLanguage(id: "it", label: "Italiano", voices: ["it-IT", "it"]),
+        StoryLanguage(id: "ru", label: "Русский", voices: ["ru-RU", "ru"]),
+        StoryLanguage(id: "ja", label: "日本語", voices: ["ja-JP", "ja"]),
+        StoryLanguage(id: "ko", label: "한국어", voices: ["ko-KR", "ko"]),
+        StoryLanguage(id: "zh", label: "中文", voices: ["zh-CN", "zh-TW", "zh-HK", "zh"]),
+        StoryLanguage(id: "ar", label: "العربية", voices: ["ar-SA", "ar-001", "ar"]),
+        StoryLanguage(id: "hi", label: "हिन्दी", voices: ["hi-IN", "hi"]),
+        StoryLanguage(id: "fil", label: "Filipino", voices: ["fil-PH", "fil"]),
+        StoryLanguage(id: "id", label: "Bahasa Indonesia", voices: ["id-ID", "id"]),
+        StoryLanguage(id: "tr", label: "Türkçe", voices: ["tr-TR", "tr"]),
+        StoryLanguage(id: "pl", label: "Polski", voices: ["pl-PL", "pl"]),
+        StoryLanguage(id: "nl", label: "Nederlands", voices: ["nl-NL", "nl-BE", "nl"]),
+        StoryLanguage(id: "sv", label: "Svenska", voices: ["sv-SE", "sv"]),
+        StoryLanguage(id: "da", label: "Dansk", voices: ["da-DK", "da"]),
+        StoryLanguage(id: "nb", label: "Norsk", voices: ["nb-NO", "nb"]),
+        StoryLanguage(id: "fi", label: "Suomi", voices: ["fi-FI", "fi"]),
+        StoryLanguage(id: "el", label: "Ελληνικά", voices: ["el-GR", "el"]),
+        StoryLanguage(id: "he", label: "עברית", voices: ["he-IL", "he"]),
+        StoryLanguage(id: "th", label: "ไทย", voices: ["th-TH", "th"]),
+        StoryLanguage(id: "vi", label: "Tiếng Việt", voices: ["vi-VN", "vi"]),
+        StoryLanguage(id: "uk", label: "Українська", voices: ["uk-UA", "uk"]),
+        StoryLanguage(id: "ro", label: "Română", voices: ["ro-RO", "ro"]),
+        StoryLanguage(id: "cs", label: "Čeština", voices: ["cs-CZ", "cs"]),
+        StoryLanguage(id: "hu", label: "Magyar", voices: ["hu-HU", "hu"]),
+        StoryLanguage(id: "sk", label: "Slovenčina", voices: ["sk-SK", "sk"]),
+        StoryLanguage(id: "hr", label: "Hrvatski", voices: ["hr-HR", "hr"]),
+        StoryLanguage(id: "ca", label: "Català", voices: ["ca-ES", "ca"]),
+        StoryLanguage(id: "ms", label: "Bahasa Melayu", voices: ["ms-MY", "ms"]),
+        StoryLanguage(id: "bn", label: "বাংলা", voices: ["bn-IN", "bn-BD", "bn"]),
+        StoryLanguage(id: "ta", label: "தமிழ்", voices: ["ta-IN", "ta"]),
+        StoryLanguage(id: "te", label: "తెలుగు", voices: ["te-IN", "te"]),
+    ]
+}
+
+// MARK: - Voice Settings
+
+struct VoiceInfo: Identifiable, Hashable {
+    let id: String
+    let name: String
+    let language: String
+    let quality: AVSpeechSynthesisVoiceQuality
+
+    var qualityLabel: String {
+        switch quality {
+        case .enhanced: return "enhanced"
+        case .premium: return "premium"
+        default: return "default"
         }
     }
 
-    var restingColor: Color {
-        switch self {
-        case .meditation:
-            return .ankyAmber.opacity(0.78)
-        case .breathwork:
-            return Color(red: 0.15, green: 0.22, blue: 0.42)
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .meditation:
-            return "Sit"
-        case .breathwork:
-            return "Breathe"
-        }
-    }
-
-    var experience: AppState.ActiveExperience {
-        switch self {
-        case .meditation:
-            return .meditation
-        case .breathwork:
-            return .breathwork
-        }
+    init(from voice: AVSpeechSynthesisVoice) {
+        self.id = voice.identifier
+        self.name = voice.name
+        self.language = voice.language
+        self.quality = voice.quality
     }
 }
 
-@MainActor
-final class GuidancePlaybackModel: NSObject, ObservableObject {
-    enum BreathCue: String {
-        case inhale = "Inhale"
-        case hold = "Hold"
-        case exhale = "Exhale"
-        case rest = "Rest"
-        case settling = "Arrive"
-    }
+// MARK: - StoryPlaybackModel
 
+@MainActor
+final class StoryPlaybackModel: NSObject, ObservableObject {
     @Published var currentPhaseIndex = 0
-    @Published var currentPhaseName = "Arriving"
+    @Published var currentPhaseName = ""
     @Published var subtitle = ""
-    @Published var cue: BreathCue = .settling
-    @Published var repLabel: String?
     @Published var elapsedSeconds = 0
     @Published var isPaused = false
     @Published var isComplete = false
     @Published var controlsVisible = true
-    @Published var orbScale: CGFloat = 0.5
-    @Published var orbColor: Color
+    @Published var selectedLanguage: StoryLanguage
+
+    // Voice settings
+    @Published var speechRate: Float = 0.38
+    @Published var speechPitch: Float = 0.95
+    @Published var selectedVoiceId: String?
+    @Published var availableVoices: [VoiceInfo] = []
 
     let session: GuidanceSession
-    let mode: GuidancePlaybackMode
+    let storyId: String
+    let onFinish: ((Bool) async -> Void)?
 
-    private let speaker = GuidanceSpeaker()
-    private let lightHaptic = UIImpactFeedbackGenerator(style: .light)
-    private let mediumHaptic = UIImpactFeedbackGenerator(style: .medium)
-    private let heavyHaptic = UIImpactFeedbackGenerator(style: .heavy)
-
+    private let speaker = StorySpeaker()
     private var playbackTask: Task<Void, Never>?
     private var elapsedTask: Task<Void, Never>?
-    private var meditationSessionID: String?
+    private var didReportCompletion = false
 
-    init(session: GuidanceSession, mode: GuidancePlaybackMode) {
+    init(
+        session: GuidanceSession,
+        storyId: String = "",
+        onFinish: ((Bool) async -> Void)? = nil
+    ) {
         self.session = session
-        self.mode = mode
-        self.orbColor = mode.restingColor
+        self.storyId = storyId
+        self.onFinish = onFinish
+
+        // Use user's preferred language, falling back to content detection
+        let settings = UserSettings.shared
+        self.selectedLanguage = settings.preferredStoryLanguage
+
         super.init()
+        refreshAvailableVoices()
     }
 
     func start() {
         guard playbackTask == nil else { return }
-        configureSpeaker()
+        applySpeakerSettings()
+        setupRemoteCommands()
+
+        // Resume from saved position if available
+        var startIndex = 0
+        if let savedPosition = UserSettings.shared.resumePosition(for: storyId) {
+            let targetSeconds = Int(savedPosition)
+            var accumulated = 0
+            for (i, phase) in session.phases.enumerated() {
+                if accumulated + phase.durationSeconds > targetSeconds {
+                    startIndex = i
+                    elapsedSeconds = targetSeconds
+                    break
+                }
+                accumulated += phase.durationSeconds
+            }
+        }
 
         elapsedTask = Task { [weak self] in
             guard let self else { return }
             while !Task.isCancelled, !self.isComplete {
-                try? await Task.sleep(for: .seconds(1))
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled else { return }
                 guard !self.isPaused else { continue }
                 self.elapsedSeconds += 1
+                self.savePosition()
+                self.updateNowPlaying()
             }
         }
 
         playbackTask = Task { [weak self] in
             guard let self else { return }
-            await self.beginLoggingIfNeeded()
-            await self.runSession()
+            await self.runSession(from: startIndex)
         }
+    }
+
+    func changeLanguage(to language: StoryLanguage) {
+        selectedLanguage = language
+        selectedVoiceId = nil
+        refreshAvailableVoices()
+        restartFromCurrentPhase()
+    }
+
+    func applyVoiceSettings() {
+        restartFromCurrentPhase()
     }
 
     func togglePause() {
         isPaused.toggle()
         if isPaused {
             speaker.pause()
+            savePosition()
         } else {
             speaker.resume()
         }
+        updateNowPlaying()
     }
 
-    func revealControls() {
-        controlsVisible.toggle()
+    func skipToNext() {
+        playbackTask?.cancel()
+        let nextIndex = currentPhaseIndex + 1
+        guard nextIndex < session.phases.count else {
+            isComplete = true
+            controlsVisible = true
+            return
+        }
+        speaker.stop()
+        currentPhaseIndex = nextIndex
+
+        // Recalculate elapsed to match phase start
+        var accumulated = 0
+        for i in 0..<nextIndex {
+            accumulated += session.phases[i].durationSeconds
+        }
+        elapsedSeconds = accumulated
+
+        playbackTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runSession(from: nextIndex)
+        }
+    }
+
+    func skipToPrevious() {
+        playbackTask?.cancel()
+        let prevIndex = max(currentPhaseIndex - 1, 0)
+        speaker.stop()
+        currentPhaseIndex = prevIndex
+
+        var accumulated = 0
+        for i in 0..<prevIndex {
+            accumulated += session.phases[i].durationSeconds
+        }
+        elapsedSeconds = accumulated
+
+        playbackTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runSession(from: prevIndex)
+        }
     }
 
     func finishEarly() async {
         playbackTask?.cancel()
         elapsedTask?.cancel()
         speaker.stop()
-        await logCompletion(completed: false)
+        savePosition()
+        clearRemoteCommands()
+        await reportCompletion(completed: false)
     }
 
-    func completeAndStopIfNeeded() async {
-        await logCompletion(completed: true)
+    func seekTo(fraction: Double) {
+        let total = max(session.durationSeconds, 1)
+        elapsedSeconds = Int(fraction * Double(total))
     }
 
     var progress: Double {
@@ -141,158 +245,217 @@ final class GuidancePlaybackModel: NSObject, ObservableObject {
         return String(format: "%02d:%02d", minutes, seconds)
     }
 
-    var bpmDuration: Double {
-        max(60.0 / Double(max(session.backgroundBeatBpm, 1)), 0.75)
+    var totalLabel: String {
+        let minutes = session.durationSeconds / 60
+        let seconds = session.durationSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 
-    private func configureSpeaker() {
-        speaker.configure()
-        lightHaptic.prepare()
-        mediumHaptic.prepare()
-        heavyHaptic.prepare()
+    var fullNarration: String {
+        session.phases.map { $0.translatedNarration(for: selectedLanguage.id) }.joined(separator: "\n\n")
     }
 
-    private func beginLoggingIfNeeded() async {
-        guard case .meditation = mode else { return }
-        let minutes = max(Int(ceil(Double(session.durationSeconds) / 60.0)), 1)
-        meditationSessionID = try? await AnkyAPI.shared.startMeditation(minutes: minutes).sessionId
+    func refreshAvailableVoices() {
+        let allVoices = AVSpeechSynthesisVoice.speechVoices()
+        let matching = allVoices.filter { voice in
+            selectedLanguage.voices.contains { lang in
+                voice.language == lang || voice.language.hasPrefix(lang)
+            }
+        }
+        .sorted { $0.quality.rawValue > $1.quality.rawValue }
+
+        availableVoices = matching.map { VoiceInfo(from: $0) }
+
+        if selectedVoiceId == nil || !availableVoices.contains(where: { $0.id == selectedVoiceId }) {
+            selectedVoiceId = availableVoices.first?.id
+        }
     }
 
-    private func runSession() async {
-        for (index, phase) in session.phases.enumerated() {
+    // MARK: - Now Playing
+
+    private func setupRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+
+        center.playCommand.isEnabled = true
+        center.playCommand.addTarget { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isPaused else { return }
+                self.togglePause()
+            }
+            return .success
+        }
+
+        center.pauseCommand.isEnabled = true
+        center.pauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.isPaused else { return }
+                self.togglePause()
+            }
+            return .success
+        }
+
+        center.togglePlayPauseCommand.isEnabled = true
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.togglePause() }
+            return .success
+        }
+
+        center.nextTrackCommand.isEnabled = true
+        center.nextTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.skipToNext() }
+            return .success
+        }
+
+        center.previousTrackCommand.isEnabled = true
+        center.previousTrackCommand.addTarget { [weak self] _ in
+            Task { @MainActor in self?.skipToPrevious() }
+            return .success
+        }
+
+        updateNowPlaying()
+    }
+
+    private func updateNowPlaying() {
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: session.title,
+            MPMediaItemPropertyArtist: "Anky",
+            MPMediaItemPropertyPlaybackDuration: NSNumber(value: session.durationSeconds),
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: NSNumber(value: elapsedSeconds),
+            MPNowPlayingInfoPropertyPlaybackRate: NSNumber(value: isPaused ? 0.0 : 1.0),
+        ]
+
+        // Set artwork from current phase image if available
+        if let imageUrl = session.phases[safe: currentPhaseIndex]?.imageUrl,
+           let url = URL(string: imageUrl),
+           let data = try? Data(contentsOf: url),
+           let uiImage = UIImage(data: data) {
+            let artwork = MPMediaItemArtwork(boundsSize: uiImage.size) { _ in uiImage }
+            info[MPMediaItemPropertyArtwork] = artwork
+        }
+
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    }
+
+    private func clearRemoteCommands() {
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.removeTarget(nil)
+        center.pauseCommand.removeTarget(nil)
+        center.togglePlayPauseCommand.removeTarget(nil)
+        center.nextTrackCommand.removeTarget(nil)
+        center.previousTrackCommand.removeTarget(nil)
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    }
+
+    // MARK: - Playback Position
+
+    private func savePosition() {
+        guard !storyId.isEmpty else { return }
+        UserSettings.shared.savePlaybackPosition(storyId: storyId, position: Double(elapsedSeconds))
+    }
+
+    // MARK: - Private
+
+    private func applySpeakerSettings() {
+        speaker.configure(
+            preferredLanguages: selectedLanguage.voices,
+            rate: speechRate,
+            pitch: speechPitch,
+            voiceId: selectedVoiceId
+        )
+    }
+
+    private func restartFromCurrentPhase() {
+        speaker.stop()
+        applySpeakerSettings()
+        let currentIndex = currentPhaseIndex
+        playbackTask?.cancel()
+        playbackTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runSession(from: currentIndex)
+        }
+    }
+
+    private func runSession(from startIndex: Int = 0) async {
+        for index in startIndex..<session.phases.count {
             guard !Task.isCancelled else { return }
+            let phase = session.phases[index]
             currentPhaseIndex = index
             currentPhaseName = phase.name
-            subtitle = phase.narration
-            repLabel = nil
 
-            switch phase.kind {
-            case .narration, .bodyScan, .visualization:
-                cue = .settling
-                await setOrb(scale: 0.58, color: mode.accent.opacity(0.78), duration: 1.0)
-                await speakAndHold(phase)
-            case .breathing:
-                await runBreathingPhase(phase)
-            case .hold:
-                cue = .hold
-                heavyHaptic.impactOccurred()
-                await setOrb(scale: 0.88, color: mode.accent, duration: 0.8)
-                if !phase.narration.isEmpty {
-                    _ = await speaker.speak(phase.narration)
-                }
-                let holdSeconds = phase.holdSeconds ?? Double(phase.durationSeconds)
-                await sleepRespectingPause(seconds: holdSeconds)
-            case .rest:
-                cue = .rest
-                subtitle = phase.narration.isEmpty ? "Silence." : phase.narration
-                await setOrb(scale: 0.42, color: mode.restingColor.opacity(0.72), duration: 1.0)
-                await sleepRespectingPause(seconds: Double(phase.durationSeconds))
+            // Use translated narration if available for selected language
+            let narrationText = phase.translatedNarration(for: selectedLanguage.id)
+            subtitle = narrationText
+            updateNowPlaying()
+
+            // Speak narration — flows continuously, minimal gap between phases
+            await speaker.speak(narrationText)
+
+            // Brief transition pause between phases (not the full durationSeconds gap)
+            if index < session.phases.count - 1 {
+                await sleepRespectingPause(seconds: 0.3)
             }
         }
 
         isComplete = true
         controlsVisible = true
-        cue = .rest
-        repLabel = nil
-        subtitle = mode == .meditation ? "The sit has landed." : "The breath has come back to stillness."
-        await setOrb(scale: 0.46, color: mode.restingColor, duration: 1.2)
-        await logCompletion(completed: true)
-    }
+        subtitle = ""
 
-    private func speakAndHold(_ phase: GuidancePhase) async {
-        let spokenDuration = await speaker.speak(phase.narration)
-        let remaining = max(0, Double(phase.durationSeconds) - spokenDuration)
-        await sleepRespectingPause(seconds: remaining)
-    }
-
-    private func runBreathingPhase(_ phase: GuidancePhase) async {
-        if !phase.narration.isEmpty {
-            _ = await speaker.speak(phase.narration)
+        // Mark completed
+        if !storyId.isEmpty {
+            UserSettings.shared.markStoryCompleted(storyId)
+            UserSettings.shared.clearPlaybackPosition()
         }
-
-        let inhale = phase.inhaleSeconds ?? 4
-        let hold = phase.holdSeconds ?? 0
-        let exhale = phase.exhaleSeconds ?? 4
-        let reps = max(phase.reps ?? 4, 1)
-
-        for rep in 0..<reps {
-            guard !Task.isCancelled else { return }
-
-            repLabel = "\(rep + 1) / \(reps)"
-
-            cue = .inhale
-            lightHaptic.impactOccurred()
-            await setOrb(scale: 1.0, color: mode.accent, duration: inhale)
-            await sleepRespectingPause(seconds: inhale)
-
-            if hold > 0 {
-                cue = .hold
-                heavyHaptic.impactOccurred()
-                await setOrb(scale: 0.92, color: mode.accent.opacity(0.92), duration: 0.4)
-                await sleepRespectingPause(seconds: hold)
-            }
-
-            cue = .exhale
-            mediumHaptic.impactOccurred()
-            await setOrb(scale: 0.42, color: mode.restingColor, duration: exhale)
-            await sleepRespectingPause(seconds: exhale)
-        }
-    }
-
-    private func setOrb(scale: CGFloat, color: Color, duration: Double) async {
-        withAnimation(.easeInOut(duration: duration)) {
-            orbScale = scale
-            orbColor = color
-        }
+        clearRemoteCommands()
+        await reportCompletion(completed: true)
     }
 
     private func sleepRespectingPause(seconds: Double) async {
         guard seconds > 0 else { return }
-
         var remaining = seconds
         while remaining > 0, !Task.isCancelled {
             if isPaused {
-                try? await Task.sleep(for: .milliseconds(150))
+                try? await Task.sleep(nanoseconds: 150_000_000)
                 continue
             }
-
             let slice = min(remaining, 0.1)
-            try? await Task.sleep(for: .milliseconds(Int(slice * 1000)))
+            try? await Task.sleep(nanoseconds: UInt64(slice * 1_000_000_000))
             remaining -= slice
         }
     }
 
-    private func logCompletion(completed: Bool) async {
-        guard !Task.isCancelled else { return }
-
-        switch mode {
-        case .meditation:
-            guard let meditationSessionID else { return }
-            _ = try? await AnkyAPI.shared.completeMeditation(
-                MeditationCompleteRequest(
-                    sessionId: meditationSessionID,
-                    actualSeconds: elapsedSeconds,
-                    completed: completed
-                )
-            )
-            self.meditationSessionID = nil
-        case .breathwork:
-            guard completed, let sessionID = session.id else { return }
-            _ = try? await AnkyAPI.shared.completeBreathwork(
-                BreathworkCompleteRequest(sessionId: sessionID, notes: nil)
-            )
-        }
+    private func reportCompletion(completed: Bool) async {
+        guard !didReportCompletion else { return }
+        didReportCompletion = true
+        await onFinish?(completed)
     }
 }
 
+// MARK: - Array Safe Subscript
+
+extension Array {
+    subscript(safe index: Int) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
+// MARK: - StorySpeaker
+
 @MainActor
-private final class GuidanceSpeaker: NSObject, @preconcurrency AVSpeechSynthesizerDelegate {
+private final class StorySpeaker: NSObject, @preconcurrency AVSpeechSynthesizerDelegate {
     private let synthesizer = AVSpeechSynthesizer()
     private var continuation: CheckedContinuation<Double, Never>?
     private var startedAt: Date?
+    private var preferredLanguages: [String] = ["en-US", "en"]
+    private var rate: Float = 0.38
+    private var pitch: Float = 0.95
+    private var voiceId: String?
 
-    func configure() {
+    func configure(preferredLanguages: [String], rate: Float, pitch: Float, voiceId: String?) {
         synthesizer.delegate = self
+        self.preferredLanguages = preferredLanguages
+        self.rate = rate
+        self.pitch = pitch
+        self.voiceId = voiceId
     }
 
     func speak(_ text: String) async -> Double {
@@ -300,11 +463,11 @@ private final class GuidanceSpeaker: NSObject, @preconcurrency AVSpeechSynthesiz
         guard !trimmed.isEmpty else { return 0 }
 
         let utterance = AVSpeechUtterance(string: trimmed)
-        utterance.voice = bestVoice()
-        utterance.rate = 0.42
-        utterance.pitchMultiplier = 0.9
-        utterance.preUtteranceDelay = 0.4
-        utterance.postUtteranceDelay = 0.25
+        utterance.voice = resolveVoice()
+        utterance.rate = rate
+        utterance.pitchMultiplier = pitch
+        utterance.preUtteranceDelay = 0.15
+        utterance.postUtteranceDelay = 0.1
         startedAt = .now
 
         return await withCheckedContinuation { continuation in
@@ -313,13 +476,8 @@ private final class GuidanceSpeaker: NSObject, @preconcurrency AVSpeechSynthesiz
         }
     }
 
-    func pause() {
-        synthesizer.pauseSpeaking(at: .word)
-    }
-
-    func resume() {
-        synthesizer.continueSpeaking()
-    }
+    func pause() { synthesizer.pauseSpeaking(at: .word) }
+    func resume() { synthesizer.continueSpeaking() }
 
     func stop() {
         synthesizer.stopSpeaking(at: .immediate)
@@ -341,212 +499,56 @@ private final class GuidanceSpeaker: NSObject, @preconcurrency AVSpeechSynthesiz
         continuation = nil
     }
 
-    private func bestVoice() -> AVSpeechSynthesisVoice? {
-        AVSpeechSynthesisVoice
+    private func resolveVoice() -> AVSpeechSynthesisVoice? {
+        if let voiceId, let voice = AVSpeechSynthesisVoice(identifier: voiceId) {
+            return voice
+        }
+        return AVSpeechSynthesisVoice
             .speechVoices()
-            .filter { $0.language.starts(with: "en") }
+            .filter { voice in
+                preferredLanguages.contains { language in
+                    voice.language == language || voice.language.hasPrefix(language)
+                }
+            }
+            .sorted { $0.quality.rawValue > $1.quality.rawValue }
+            .first
+            ?? AVSpeechSynthesisVoice.speechVoices()
             .sorted { $0.quality.rawValue > $1.quality.rawValue }
             .first
     }
 }
 
+// MARK: - GuidancePlaybackView (Legacy wrapper)
+
 struct GuidancePlaybackView: View {
-    @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
 
-    @StateObject private var model: GuidancePlaybackModel
+    let session: GuidanceSession
+    let onFinish: ((Bool) async -> Void)?
 
-    init(session: GuidanceSession, mode: GuidancePlaybackMode) {
-        _model = StateObject(wrappedValue: GuidancePlaybackModel(session: session, mode: mode))
+    init(
+        session: GuidanceSession,
+        onFinish: ((Bool) async -> Void)? = nil
+    ) {
+        self.session = session
+        self.onFinish = onFinish
     }
 
     var body: some View {
-        ZStack {
-            LinearGradient(
-                colors: [Color.ankyBlack, model.mode.restingColor.opacity(0.22), Color.ankyBlack],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
+        let story = Cuentacuentos(
+            id: session.id ?? UUID().uuidString,
+            writingId: "",
+            title: session.title,
+            content: session.description,
+            guidancePhases: session.phases,
+            played: false,
+            generatedAt: "",
+            contentEs: nil,
+            contentZh: nil,
+            contentHi: nil,
+            contentAr: nil
+        )
 
-            VStack(spacing: 22) {
-                topBar
-
-                Spacer(minLength: 20)
-
-                VStack(spacing: 18) {
-                    Text(model.currentPhaseName.uppercased())
-                        .font(.custom("Righteous-Regular", size: 12))
-                        .foregroundStyle(model.mode.accent.opacity(0.92))
-                        .tracking(1.6)
-
-                    GuidanceOrb(
-                        scale: model.orbScale,
-                        color: model.orbColor,
-                        pulseDuration: model.bpmDuration
-                    )
-
-                    VStack(spacing: 10) {
-                        Text(model.cue.rawValue)
-                            .font(.custom("Righteous-Regular", size: 30))
-                            .foregroundStyle(Color.ankyInk)
-
-                        if let repLabel = model.repLabel {
-                            Text(repLabel)
-                                .font(.custom("Righteous-Regular", size: 13))
-                                .foregroundStyle(model.mode.accent)
-                        }
-                    }
-                }
-
-                Spacer(minLength: 20)
-
-                VStack(spacing: 16) {
-                    Text(model.subtitle)
-                        .font(.custom("Georgia", size: 21))
-                        .foregroundStyle(Color.ankyInk.opacity(0.92))
-                        .lineSpacing(8)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 8)
-
-                    GeometryReader { proxy in
-                        ZStack(alignment: .leading) {
-                            Capsule(style: .continuous)
-                                .fill(Color.white.opacity(0.08))
-
-                            Capsule(style: .continuous)
-                                .fill(model.mode.accent)
-                                .frame(width: max(proxy.size.width * model.progress, 14))
-                        }
-                    }
-                    .frame(height: 6)
-                    .padding(.horizontal, 8)
-
-                    Text(model.elapsedLabel)
-                        .font(.custom("Righteous-Regular", size: 12))
-                        .foregroundStyle(Color.ankyMuted)
-                }
-
-                if model.controlsVisible {
-                    controls
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.35)) {
-                model.revealControls()
-            }
-        }
-        .task {
-            appState.activeExperience = model.mode.experience
-            model.start()
-        }
-        .onDisappear {
-            appState.activeExperience = nil
-        }
-        .statusBarHidden(true)
-    }
-
-    private var topBar: some View {
-        HStack {
-            Text(model.mode.title)
-                .font(.custom("Righteous-Regular", size: 20))
-                .foregroundStyle(model.mode.accent)
-
-            Spacer()
-
-            Button {
-                Task {
-                    await model.finishEarly()
-                    dismiss()
-                }
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.ankyInk)
-                    .frame(width: 38, height: 38)
-                    .background(
-                        Circle()
-                            .fill(Color.white.opacity(0.08))
-                    )
-            }
-            .buttonStyle(.plain)
-        }
-    }
-
-    private var controls: some View {
-        VStack(spacing: 12) {
-            if model.isComplete {
-                Button {
-                    dismiss()
-                } label: {
-                    Text("Done")
-                        .font(.custom("Righteous-Regular", size: 18))
-                        .foregroundStyle(Color.ankyBlack)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 54)
-                        .background(
-                            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                .fill(model.mode.accent)
-                        )
-                }
-                .buttonStyle(.plain)
-            } else {
-                Button {
-                    withAnimation(.easeInOut(duration: 0.25)) {
-                        model.togglePause()
-                    }
-                } label: {
-                    Text(model.isPaused ? "Resume" : "Pause")
-                        .font(.custom("Righteous-Regular", size: 17))
-                        .foregroundStyle(model.mode.accent)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 50)
-                        .background(
-                            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                                .fill(Color.white.opacity(0.08))
-                        )
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .transition(.move(edge: .bottom).combined(with: .opacity))
-    }
-}
-
-private struct GuidanceOrb: View {
-    let scale: CGFloat
-    let color: Color
-    let pulseDuration: Double
-
-    @State private var pulse = false
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .stroke(color.opacity(0.18), lineWidth: 1)
-                .frame(width: 320, height: 320)
-                .scaleEffect(pulse ? 1.02 : 0.96)
-                .animation(.easeInOut(duration: pulseDuration).repeatForever(autoreverses: true), value: pulse)
-
-            Circle()
-                .fill(
-                    RadialGradient(
-                        colors: [color.opacity(0.96), color.opacity(0.26), .clear],
-                        center: .center,
-                        startRadius: 24,
-                        endRadius: 170
-                    )
-                )
-                .frame(width: 300, height: 300)
-                .scaleEffect(scale)
-        }
-        .frame(height: 320)
-        .onAppear {
-            pulse = true
-        }
+        StoryPlayerView(story: story, onFinish: onFinish)
     }
 }

@@ -32,7 +32,7 @@ struct AnkyComposerTextView: UIViewRepresentable {
         textView.smartQuotesType = .no
         textView.smartDashesType = .no
         textView.smartInsertDeleteType = .no
-        textView.autocapitalizationType = .sentences
+        textView.autocapitalizationType = .none
         textView.returnKeyType = .default
         textView.isScrollEnabled = !isVisuallyHidden
         textView.alwaysBounceVertical = !isVisuallyHidden

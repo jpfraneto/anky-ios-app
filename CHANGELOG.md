@@ -10,6 +10,116 @@ This file tracks meaningful work on the Anky iOS app.
 - Prefer `Added`, `Changed`, `Fixed`, and `Verified`.
 - Reference the user-facing behavior and the system integration, not just file edits.
 
+## 2026-04-03
+
+### Added
+
+- Reusable eight-second `SealView` with the full kingdom color progression, heavy completion haptic, and screen flash so the same ritual can be reused for writing submission and browser QR auth.
+- Native `AltarView` with live `/api/altar` data, leaderboard, recent burns, amount entry, and post-burn glow feedback.
+- Stripe Apple Pay support through the `stripe-ios-spm` package, app entitlements for `merchant.com.jpfraneto.anky`, and native PaymentIntent confirmation through `STPApplePayContext`.
+- QR deep-link seal auth for `anky://seal?challenge=...`, including local Ed25519 signing, base58 signature encoding, and `POST /api/auth/qr/seal`.
+- A new JP tutorial lesson covering the seal architecture, Apple Pay flow, and QR auth path.
+- A second JP tutorial lesson covering the altar-first shell, Face ID writing gate, daily keyboard theming, and the simplified post-write chat surface.
+
+### Changed
+
+- Replaced the active writing flow's send buttons with the eight-second seal in the keyboard, pause-choice, and voice-writing surfaces so writing is now "sealed" instead of tapped-to-send.
+- Extended the root app state and URL handling so incoming seal links become a full-screen auth flow instead of ad-hoc navigation.
+- Extended the API client and models with root web endpoints for altar reads, PaymentIntent creation, Apple Pay burn recording, and QR seal verification.
+- Updated the repo docs to describe the current Solana/Ed25519 identity path and the new altar/seal behavior instead of the older EVM-focused notes.
+- Reworked the active `AnkyChatView` shell so signed-in users now land on the altar instead of auto-opening writing, with a Face ID-gated bottom button that presents the writing experience above the altar.
+- Updated the altar home surface to use the provided generated story image as a full-screen background while keeping the live altar data and Apple Pay flow intact.
+- Reworked the in-app writing keyboard to use the current Ankyverse day from the calendar and added comma, period, newline, and `123` / `ABC` symbol toggling.
+- Simplified the post-write continuation path so short writing now falls into a lightweight conversation surface inside the same writing experience instead of resetting back to blank space.
+
+### Fixed
+
+- Added pending burn-sync persistence so a successful Apple Pay charge can still be attached to the correct Solana identity if the final `/api/altar/apple-pay` call fails immediately afterward.
+
+### Verified
+
+- `curl -sS https://anky.app/api/altar`
+- `xcodebuild -resolvePackageDependencies -project /Users/kithkui/Desktop/ankY/Anky.xcodeproj -clonedSourcePackagesDirPath /Users/kithkui/Desktop/ankY/.build/spm`
+- `xcodebuild -scheme Anky -project /Users/kithkui/Desktop/ankY/Anky.xcodeproj -destination 'generic/platform=iOS Simulator' build`
+- `xcodebuild -scheme Anky -project /Users/kithkui/Desktop/Anky/Anky.xcodeproj -destination 'generic/platform=iOS Simulator' build`
+
+## 2026-03-30
+
+### Added
+
+- Lightweight follow-up conversation inside `AnkyChatView` so users can reply in text after the first reflected response to a writing session.
+- Root web API support for `POST /api/chat-quick` with `QuickChatRequest`, `ChatHistoryItem`, and `QuickChatResponse` models.
+- In-memory retention of the latest writing text so quick-chat replies stay grounded in the original session.
+
+### Changed
+
+- Switched the bottom chat input bar into a reply-composer mode after the latest writing receives an assistant response, while keeping a small new-writing button available.
+- Built quick-chat history from the current-session thread after the latest writing message, excluding the writing payload itself and the pre-writing prompt messages.
+- Reworked the active `AnkyChatView` session timer so it no longer auto-sends at 8 minutes; the timer now keeps counting, 8 minutes is a visual milestone only, and 8 seconds of idle pauses into explicit `send` / `keep writing` controls.
+
+### Fixed
+
+- Fixed local writing-history caching so the reflected response from `/swift/v2/writing/:sessionId/status` is stored instead of being dropped as `nil`.
+
+### Verified
+
+- `xcodebuild -scheme Anky -project /Users/kithkui/Desktop/Anky/Anky.xcodeproj -destination 'generic/platform=iOS Simulator' build`
+
+## 2026-03-17
+
+### Added
+
+- Parent-to-child world flow with `ChildProfile`, `CreateChildRequest`, `Cuentacuentos`, `/swift/v2/children`, and `/swift/v2/cuentacuentos/*` client support.
+- `ChildProfileStore`, `CreateChildView`, `ChildShellView`, and shared emoji-pattern UI components for local child profile persistence, emoji confirmation, and child-world unlocking.
+- Deterministic on-device child wallet derivation from the parent private key plus `SHA256(parentWalletAddress + name + birthdate)`.
+
+### Changed
+
+- Extended the unlocked shell with a child-world tray below the existing tab bar and a one-time prompt after the first unlocked anky when no child worlds exist yet.
+- Extended the shared guidance player with a `cuentacuentos` mode, Spanish voice preference, and a completion callback so child stories reuse the existing playback engine.
+- Extended the `ANKYS` history cards with a `📖` indicator and read-only story sheet when a writing already produced a child story.
+
+### Verified
+
+- `xcodebuild -scheme Anky -project /Users/kithkui/Desktop/Anky/Anky.xcodeproj -destination 'generic/platform=iOS Simulator' build`
+
+## 2026-03-16
+
+### Added
+
+- A four-step welcome flow that introduces the 8-minute practice, Face ID privacy, iCloud Keychain-backed seed storage, and a daily 6:00 AM local prompt notification.
+
+### Changed
+
+- Simplified the `NOW` writing footer into a responsive three-layer stack: visible writing line, progress bar, and status row.
+- Moved the latest typed text into a right-anchored single-line strip so overflow stays clipped instead of stretching the viewport wider than the screen.
+- Removed the visible `CONTINUE` pause button in favor of a text-only `type to resume` pause state after the first lost life.
+- Normalized current routed-shell text styling onto the bundled Righteous font.
+
+### Fixed
+
+- Fixed the heart-drain animation so the active life now empties vertically instead of left-to-right.
+- Fixed writing-session layout overflow so the screen stays bounded to the device width and hides excess content instead of expanding.
+- Fixed the center glyph sizing again so it stays smaller and more stable while typing.
+
+## 2026-03-16
+
+### Added
+
+- `Tools/LiveBackendVerifier.swift`, a repo-local production verifier that uses the shipped EVM derivation and `personal_sign` code to exercise `/swift/v2/auth/challenge`, `/swift/v2/auth/verify`, `/swift/v2/me`, and `/swift/v2/write`.
+
+### Changed
+
+- Updated the root docs and JP tutorial to remove the stale EVM backend-blocker note and point verification at the live verifier transcript instead.
+
+### Verified
+
+- Production `POST https://anky.app/swift/v2/auth/challenge` now accepts canonical `0x...` EVM wallet addresses.
+- Production `POST https://anky.app/swift/v2/auth/verify` accepts the app's hex-prefixed EIP-191 `personal_sign` signature payloads.
+- Production `GET https://anky.app/swift/v2/me` returns the expected wallet-backed identity after verify.
+- Production short `POST https://anky.app/swift/v2/write` returns `persisted: false` and does not appear in `GET https://anky.app/swift/v2/writings`.
+- Production real `POST https://anky.app/swift/v2/write` returns `persisted: true` and appears in `GET https://anky.app/swift/v2/writings`.
+
 ## 2026-03-16
 
 ### Added
@@ -33,7 +143,7 @@ This file tracks meaningful work on the Anky iOS app.
 
 - `xcodebuild -scheme Anky -project /Users/kithkui/Desktop/Anky/Anky.xcodeproj -destination 'generic/platform=iOS Simulator' build`
 - `xcodebuild build-for-testing -scheme Anky -project /Users/kithkui/Desktop/Anky/Anky.xcodeproj -destination 'platform=iOS Simulator,id=F50867E4-26A0-481A-B6FC-1AAD3CA68F38'`
-- As of March 16, 2026, `POST https://anky.app/swift/v2/auth/challenge` still returns `{"error":"invalid public key"}` for canonical EVM addresses such as `0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb`, so live backend EVM auth verification remains blocked pending backend validator alignment.
+- The hosted backend was later aligned to accept canonical `0x...` addresses, so the live EVM auth blocker noted during this earlier pass is no longer current.
 
 ## 2026-03-16
 

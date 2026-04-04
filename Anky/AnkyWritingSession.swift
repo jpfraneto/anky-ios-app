@@ -4,9 +4,60 @@
 //
 
 import Combine
-import Observation
 import SwiftUI
 import UIKit
+
+// MARK: - Writing Session Haptics
+
+enum WritingHaptics {
+    private static let lightImpact = UIImpactFeedbackGenerator(style: .light)
+    private static let mediumImpact = UIImpactFeedbackGenerator(style: .medium)
+    private static let heavyImpact = UIImpactFeedbackGenerator(style: .heavy)
+    private static let notification = UINotificationFeedbackGenerator()
+
+    /// First keystroke — the session is alive.
+    static func sessionStarted() {
+        mediumImpact.impactOccurred(intensity: 0.8)
+    }
+
+    /// Phase transition.
+    static func phaseTransition(_ phase: WritingFlowModel.Phase) {
+        switch phase {
+        case .writing:
+            lightImpact.impactOccurred(intensity: 0.5)
+        case .paused:
+            notification.notificationOccurred(.warning)
+        case .complete:
+            heavyImpact.impactOccurred(intensity: 1.0)
+        case .landing:
+            break
+        }
+    }
+
+    /// Idle warning ticks at 5s, 6s, 7s.
+    static func idleWarningTick(seconds: Int) {
+        switch seconds {
+        case 5:
+            lightImpact.impactOccurred(intensity: 0.3)
+        case 6:
+            lightImpact.impactOccurred(intensity: 0.5)
+        case 7:
+            mediumImpact.impactOccurred(intensity: 0.7)
+        default:
+            break
+        }
+    }
+
+    /// 8-minute threshold crossed — you made it.
+    static func thresholdCrossed() {
+        notification.notificationOccurred(.success)
+    }
+
+    /// Session ended by idle timeout — final thud.
+    static func sessionEnded() {
+        heavyImpact.impactOccurred(intensity: 1.0)
+    }
+}
 
 struct WritingOutcome: Equatable {
     enum Delivery: Equatable {
@@ -20,8 +71,7 @@ struct WritingOutcome: Equatable {
 }
 
 @MainActor
-@Observable
-final class WritingFlowModel {
+final class WritingFlowModel: ObservableObject {
     enum Phase {
         case landing
         case writing
@@ -31,31 +81,35 @@ final class WritingFlowModel {
 
     static let totalLives = 2
 
-    var prompt: String
-    var phase: Phase = .landing
-    var text = ""
-    var composerFocused = false
-    var sessionElapsed: TimeInterval = 0
-    var idleElapsed: TimeInterval = 0
-    var livesRemaining = totalLives
-    var hasCrossedThreshold = false
-    var isSubmitting = false
-    var glyphPulseCount = 0
-    var outcome: WritingOutcome?
-    var pendingCapture: LocalWritingCapture?
-    var completedCapture: LocalWritingCapture?
+    @Published var prompt: String
+    @Published var phase: Phase = .landing
+    @Published var text = ""
+    @Published var composerFocused = false
+    @Published var sessionElapsed: TimeInterval = 0
+    @Published var idleElapsed: TimeInterval = 0
+    @Published var livesRemaining = totalLives
+    @Published var hasCrossedThreshold = false
+    @Published var isSubmitting = false
+    @Published var glyphPulseCount = 0
+    @Published var outcome: WritingOutcome?
+    @Published var pendingCapture: LocalWritingCapture?
+    @Published var completedCapture: LocalWritingCapture?
 
     private let sessionGoal = LocalWritingCapture.requiredDurationForAnky
     private let idleWarningStart: TimeInterval = 3
     private let idleLimit: TimeInterval = 8
     private let draftSaveCadence: TimeInterval = 5
+    private let checkpointCadence: TimeInterval = 30
 
     private var sessionID = UUID().uuidString
     private var startedAt: Date?
     private var lastTick = Date()
     private var lastInputAt: Date?
     private var lastDraftSaveAt: TimeInterval = 0
-    private var keystrokeDeltas: [Double] = []
+    private var lastCheckpointAt: TimeInterval = 0
+    private(set) var keystrokeDeltas: [Double] = []
+    private var lastIdleWarningSecond: Int = 0
+    private var didFireThresholdHaptic = false
 
     init(prompt: String) {
         self.prompt = prompt
@@ -130,7 +184,7 @@ final class WritingFlowModel {
 
         let mean = recent.reduce(0, +) / Double(recent.count)
         let normalized = min(max((900 - mean) / 700, 0), 1)
-        return 1 + CGFloat(normalized * 0.8)
+        return 1 + CGFloat(normalized * 0.22)
     }
 
     var currentDisplayGlyph: String {
@@ -138,8 +192,9 @@ final class WritingFlowModel {
         return Self.displayGlyph(for: character)
     }
 
-    var ribbonCharacters: [String] {
-        Array(text.dropLast().suffix(180)).map(Self.displayGlyph(for:))
+    var visibleWritingLine: String {
+        let sanitized = Self.sanitizedText(text)
+        return String(sanitized.suffix(320))
     }
 
     var qualifiesForAnky: Bool {
@@ -166,6 +221,11 @@ final class WritingFlowModel {
         composerFocused = true
     }
 
+    func submitEarlyIfQualified() {
+        guard qualifiesForAnky else { return }
+        finishSession()
+    }
+
     func handleInput(_ newText: String) {
         let now = Date()
         let sanitized = Self.sanitizedText(newText)
@@ -185,6 +245,7 @@ final class WritingFlowModel {
             startedAt = now
             sessionID = UUID().uuidString
             sessionElapsed = 0
+            WritingHaptics.sessionStarted()
         } else if let lastInputAt {
             let delta = now.timeIntervalSince(lastInputAt) * 1000
             if delta.isFinite && delta > 0 {
@@ -210,16 +271,20 @@ final class WritingFlowModel {
         idleElapsed = lastInputAt.map { now.timeIntervalSince($0) } ?? 0
 
         saveDraftIfNeeded()
+        sendCheckpointIfNeeded()
         refreshThresholdState()
+
+        // Idle warning haptics at 5s, 6s, 7s
+        let idleSecond = Int(idleElapsed)
+        if idleSecond >= 5 && idleSecond <= 7 && idleSecond != lastIdleWarningSecond {
+            lastIdleWarningSecond = idleSecond
+            WritingHaptics.idleWarningTick(seconds: idleSecond)
+        }
+        if idleElapsed < 5 { lastIdleWarningSecond = 0 }
 
         if idleElapsed >= idleLimit {
             loseLifeOrComplete()
         }
-    }
-
-    func resumeManually() {
-        guard phase == .paused else { return }
-        resumeFromPauseManually(at: .now)
     }
 
     func reset(for prompt: String) {
@@ -241,6 +306,7 @@ final class WritingFlowModel {
         lastTick = Date()
         lastInputAt = nil
         lastDraftSaveAt = 0
+        lastCheckpointAt = 0
         keystrokeDeltas = []
         WritingSessionStore.clearDraft()
     }
@@ -249,44 +315,70 @@ final class WritingFlowModel {
         guard let capture = pendingCapture else { return }
         defer { pendingCapture = nil }
 
-        guard capture.qualifiesForAnky else {
-            appState.recordWriting(capture, response: nil, syncState: .localOnly)
-            return
-        }
-
         isSubmitting = true
         defer { isSubmitting = false }
 
+        // Seal the session (encrypt on-device) before sending anything
+        let sealedSession = sealCaptureIfPossible(capture: capture, appState: appState)
+        if sealedSession == nil {
+            print("[AnkyProtocol] Encryption failed — submitting in degraded mode (plaintext only)")
+        }
+
+        // Always try to send to backend (v2 handles short sessions too)
         do {
             guard await appState.ensureAuthenticatedForWrite() else {
-                await appState.queueWrite(capture)
-                appState.recordWriting(capture, response: nil, syncState: .pending)
-                outcome = WritingOutcome(
-                    capture: capture,
-                    delivery: .queued
-                )
+                // Not authenticated — queue if anky-worthy, otherwise save locally
+                if capture.qualifiesForAnky {
+                    await appState.queueWrite(capture)
+                    appState.recordWriting(capture, response: nil, syncState: .pending)
+                    outcome = WritingOutcome(capture: capture, delivery: .queued)
+                } else {
+                    appState.recordWriting(capture, response: nil, syncState: .localOnly)
+                }
                 return
             }
 
+            // TODO: Remove plaintext transmission once enclave reflection pipeline is live.
+            // The sealed envelope sent to POST /api/sessions/seal is the cryptographic source of truth.
+            // Plaintext is only sent now because the reflection generation (Claude API) needs to read it.
+            // When the enclave handles reflection generation, this line gets deleted.
             let response = try await AnkyAPI.shared.submitWriting(capture.request)
-            if response.persisted == true {
+
+            // Send sealed session to enclave endpoint (with retry on failure)
+            if let sealed = sealedSession {
+                Task {
+                    do {
+                        _ = try await AnkyAPI.shared.sealSession(sealed)
+                        SealedSessionStore.clearPending(sealed.sessionId)
+                    } catch {
+                        // Queue for retry on next app launch / network reconnection
+                        SealedSessionStore.markPending(sealed.sessionId)
+                    }
+                }
+            }
+
+            if response.isAnky && response.persisted == true {
                 await appState.applyPersistedAnkySuccess(capture: capture, response: response)
+                // Auto-mint cNFT + archive to Arweave for every persisted anky
+                Self.autoMintCNFT(sessionId: capture.sessionId, appState: appState)
+                Self.archiveToArweave(sessionId: capture.sessionId, text: capture.text)
                 outcome = Self.remoteOutcome(capture: capture)
+            } else if response.persisted == true {
+                appState.recordWriting(capture, response: response, syncState: .synced)
+                outcome = WritingOutcome(capture: capture, delivery: .synced)
             } else {
-                appState.recordWriting(capture, response: nil, syncState: .localOnly)
-                outcome = WritingOutcome(
-                    capture: capture,
-                    delivery: .failed("saved locally")
-                )
+                appState.recordWriting(capture, response: response, syncState: .localOnly)
+                outcome = WritingOutcome(capture: capture, delivery: .failed("saved locally"))
             }
         } catch let error as AnkyError {
             if error.isConnectivityIssue || error == .missingSession || error == .unauthorized {
-                await appState.queueWrite(capture)
-                appState.recordWriting(capture, response: nil, syncState: .pending)
-                outcome = WritingOutcome(
-                    capture: capture,
-                    delivery: .queued
-                )
+                if capture.qualifiesForAnky {
+                    await appState.queueWrite(capture)
+                    appState.recordWriting(capture, response: nil, syncState: .pending)
+                    outcome = WritingOutcome(capture: capture, delivery: .queued)
+                } else {
+                    appState.recordWriting(capture, response: nil, syncState: .localOnly)
+                }
                 return
             }
 
@@ -301,6 +393,52 @@ final class WritingFlowModel {
                 capture: capture,
                 delivery: .failed(error.localizedDescription)
             )
+        }
+    }
+
+    /// Encrypt the session on-device. Encryption is the primary path.
+    /// If it fails, we submit plaintext as a degraded fallback so the user still gets their
+    /// reflection. But this is NOT normal operation.
+    private func sealCaptureIfPossible(capture: LocalWritingCapture, appState: AppState) -> SealedSession? {
+        do {
+            let walletAddress = (try? SeedIdentityManager.shared.walletAddress()) ?? ""
+            let metadata = SessionMetadata(
+                sessionId: capture.sessionId,
+                timestamp: capture.finishedAt,
+                durationSeconds: capture.duration,
+                kingdom: appState.kingdom.rawValue,
+                wordCount: capture.wordCount,
+                keystrokeCount: capture.keystrokeDeltas.count,
+                walletAddress: walletAddress
+            )
+            let sealed = try AnkyProtocol.sealSession(content: capture.text, metadata: metadata)
+            SealedSessionStore.save(sealed)
+            return sealed
+        } catch {
+            print("[AnkyProtocol] Encryption failed — submitting in degraded mode (plaintext only): \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func sendCheckpointIfNeeded() {
+        guard !text.isEmpty else { return }
+        guard sessionElapsed - lastCheckpointAt >= checkpointCadence else { return }
+        lastCheckpointAt = sessionElapsed
+
+        let request = MobileWriteRequest(
+            text: text,
+            duration: sessionElapsed,
+            sessionId: sessionID,
+            keystrokeDeltas: keystrokeDeltas,
+            isCheckpoint: true
+        )
+
+        Task {
+            do {
+                _ = try await AnkyAPI.shared.submitWriting(request)
+            } catch {
+                // Checkpoint failures are silent — local draft is the fallback
+            }
         }
     }
 
@@ -323,7 +461,12 @@ final class WritingFlowModel {
     }
 
     private func refreshThresholdState() {
-        hasCrossedThreshold = qualifiesForAnky
+        let nowQualifies = qualifiesForAnky
+        if nowQualifies && !hasCrossedThreshold && !didFireThresholdHaptic {
+            didFireThresholdHaptic = true
+            WritingHaptics.thresholdCrossed()
+        }
+        hasCrossedThreshold = nowQualifies
     }
 
     private func loseLifeOrComplete() {
@@ -332,6 +475,7 @@ final class WritingFlowModel {
         if livesRemaining > 1 {
             livesRemaining -= 1
             phase = .paused
+            WritingHaptics.phaseTransition(.paused)
             idleElapsed = idleLimit
             lastInputAt = nil
             lastTick = Date()
@@ -344,6 +488,7 @@ final class WritingFlowModel {
 
     private func finishSession() {
         guard hasStarted else { return }
+        WritingHaptics.sessionEnded()
 
         let capture = LocalWritingCapture(
             sessionId: sessionID,
@@ -372,12 +517,44 @@ final class WritingFlowModel {
         lastTick = now
     }
 
-    private func resumeFromPauseManually(at now: Date) {
-        phase = .writing
-        composerFocused = true
-        idleElapsed = 0
-        lastInputAt = now
-        lastTick = now
+    /// Auto-mint a cNFT for every persisted anky. Fire-and-forget with retry queue.
+    static func autoMintCNFT(sessionId: String, appState: AppState) {
+        Task {
+            do {
+                let walletAddress = try SeedIdentityManager.shared.walletAddress()
+                let mintResponse = try await AnkyAPI.shared.mintMirror(
+                    writingSessionId: sessionId,
+                    recipient: walletAddress
+                )
+                if mintResponse.success {
+                    appState.saveMirrorMint(response: mintResponse)
+                    PendingMintStore.dequeue(sessionId: sessionId)
+                    print("[cNFT] Minted anky \(sessionId) → tx: \(mintResponse.txSignature ?? "pending")")
+                } else if mintResponse.alreadyMinted == true {
+                    PendingMintStore.dequeue(sessionId: sessionId)
+                    print("[cNFT] Already minted: \(sessionId)")
+                } else {
+                    PendingMintStore.enqueue(sessionId: sessionId)
+                    print("[cNFT] Mint failed, queued for retry: \(mintResponse.error ?? "unknown")")
+                }
+            } catch {
+                PendingMintStore.enqueue(sessionId: sessionId)
+                print("[cNFT] Mint deferred (offline), queued: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Upload writing text to Arweave via Irys for permanent storage. Fire-and-forget.
+    static func archiveToArweave(sessionId: String, text: String) {
+        Task {
+            do {
+                let txId = try await ArweaveStore.upload(sessionId: sessionId, text: text)
+                print("[Arweave] Archived \(sessionId) → tx: \(txId)")
+            } catch {
+                ArweaveStore.enqueue(sessionId: sessionId, text: text)
+                print("[Arweave] Upload deferred, queued: \(error.localizedDescription)")
+            }
+        }
     }
 
     private static func remoteOutcome(capture: LocalWritingCapture) -> WritingOutcome {
@@ -421,839 +598,4 @@ final class WritingFlowModel {
     }
 }
 
-struct WritingsView: View {
-    @Environment(AppState.self) private var appState
-    @State private var model = WritingFlowModel(prompt: PromptLibrary.currentPrompt())
-    @State private var keyboardOverlap: CGFloat = 0
-
-    private let tick = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
-    private let ribbonHeight: CGFloat = 78
-    private let floatingBottomPadding: CGFloat = 12
-
-    var body: some View {
-        let copy = WritingExperienceStrings.current
-
-        ZStack {
-            backgroundLayer
-
-            switch model.phase {
-            case .landing, .writing, .paused:
-                composeScreen(copy: copy)
-            case .complete:
-                completionScreen(copy: copy)
-            }
-        }
-        .ignoresSafeArea()
-        .statusBarHidden(true)
-        .onReceive(tick) { now in
-            model.tick(at: now)
-        }
-        .onAppear {
-            model.updatePrompt(appState.prompt)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                model.beginFocus()
-            }
-        }
-        .onChange(of: appState.prompt) { _, newValue in
-            model.updatePrompt(newValue)
-        }
-        .onChange(of: model.phase) { _, newPhase in
-            appState.activeExperience = (newPhase == .writing || newPhase == .paused) ? .writing : nil
-            appState.hasInProgressWriting = WritingSessionStore.hasDraft()
-        }
-        .task(id: model.pendingCapture) {
-            await model.submitFinishedCapture(appState: appState)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
-            updateKeyboardOverlap(from: note)
-        }
-        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-            withAnimation(.easeOut(duration: 0.22)) {
-                keyboardOverlap = 0
-            }
-        }
-        .animation(.easeInOut(duration: 0.6), value: model.phase)
-        .animation(.easeInOut(duration: 0.25), value: model.idleElapsed)
-        .animation(.easeOut(duration: 0.22), value: keyboardOverlap)
-        .animation(.spring(response: 0.45, dampingFraction: 0.86), value: model.livesRemaining)
-        .animation(.spring(response: 0.4, dampingFraction: 0.84), value: model.glyphPulseCount)
-    }
-
-    private var backgroundLayer: some View {
-        ZStack {
-            LinearGradient.ankyBackground
-
-            RadialGradient(
-                colors: [
-                    model.hasCrossedThreshold ? .ankyGold.opacity(0.22) : .ankyAmber.opacity(0.12),
-                    .clear
-                ],
-                center: .center,
-                startRadius: 40,
-                endRadius: 420
-            )
-            .blur(radius: 20)
-
-            RadialGradient(
-                colors: [
-                    Color.ankyPurpleSoft.opacity(0.12 + (model.idleDrainProgress * 0.12)),
-                    .clear
-                ],
-                center: .top,
-                startRadius: 30,
-                endRadius: 360
-            )
-        }
-        .ignoresSafeArea()
-    }
-
-    private func composeScreen(copy: WritingExperienceStrings) -> some View {
-        GeometryReader { proxy in
-            let topInset = proxy.safeAreaInsets.top + 12
-            let bottomInset = keyboardBottomPadding(for: proxy.safeAreaInsets.bottom)
-            let ribbonReserve = model.hasStarted ? ribbonHeight + bottomInset : bottomInset
-            let contentHeight = max(proxy.size.height - topInset - ribbonReserve, 0)
-            let stageSize = CGSize(width: max(proxy.size.width - 48, 0), height: contentHeight)
-
-            ZStack(alignment: .bottom) {
-                AnkyComposerTextView(
-                    text: $model.text,
-                    isFocused: $model.composerFocused,
-                    isVisuallyHidden: true,
-                    onUserInput: { model.handleInput($0) }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
-
-                VStack(spacing: 0) {
-                    if model.hasStarted {
-                        sessionChrome(copy: copy)
-                            .padding(.horizontal, 18)
-                            .padding(.bottom, 16)
-                    }
-
-                    Spacer(minLength: 0)
-
-                    if model.hasStarted {
-                        glyphStage(size: stageSize)
-                            .padding(.horizontal, 24)
-                    } else {
-                        landingStage(copy: copy)
-                            .padding(.horizontal, 24)
-                    }
-
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, maxHeight: contentHeight, alignment: .top)
-                .padding(.top, topInset)
-
-                if model.hasStarted {
-                    WritingRibbonView(
-                        characters: model.ribbonCharacters,
-                        fontSize: CGFloat(16) * model.rhythmMultiplier,
-                        pulseCount: model.glyphPulseCount
-                    )
-                    .padding(.horizontal, 14)
-                    .padding(.bottom, bottomInset)
-                }
-
-                if model.phase == .paused {
-                    pausedOverlay(copy: copy, bottomPadding: bottomInset + ribbonHeight + 28)
-                }
-            }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                model.beginFocus()
-            }
-        }
-    }
-
-    private func completionScreen(copy: WritingExperienceStrings) -> some View {
-        ZStack {
-            if model.hasStarted {
-                frozenExperienceBackdrop
-            }
-
-            if model.completedCapture?.qualifiesForAnky == true {
-                successfulCompletion(copy: copy)
-            } else {
-                incompleteCompletion(copy: copy)
-            }
-        }
-    }
-
-    private func sessionChrome(copy: WritingExperienceStrings) -> some View {
-        HStack(spacing: 12) {
-            metricPill(
-                value: "\(model.wordCount)",
-                label: copy[.wordsLabel],
-                accent: model.hasCrossedThreshold
-            )
-
-            Spacer()
-
-            HStack(spacing: 10) {
-                Text(copy[.livesLabel])
-                    .font(.custom("Righteous-Regular", size: 11))
-                    .foregroundStyle(Color.ankyMuted)
-
-                HStack(spacing: 6) {
-                    ForEach(0..<WritingFlowModel.totalLives, id: \.self) { index in
-                        HeartLifeView(fill: model.heartFill(for: index))
-                    }
-                }
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 36)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color.ankyPanel.opacity(0.84))
-            )
-
-            Spacer()
-
-            Text(model.elapsedLabel)
-                .font(.system(size: 16, weight: .medium, design: .monospaced))
-                .foregroundStyle(model.hasCrossedThreshold ? Color.ankyGold : Color.ankyInk)
-                .monospacedDigit()
-        }
-    }
-
-    private func landingStage(copy: WritingExperienceStrings) -> some View {
-        VStack(spacing: 14) {
-            Text(copy[.writeNow].uppercased(with: .current))
-                .font(.custom("Righteous-Regular", size: 44))
-                .foregroundStyle(Color.ankyInk)
-                .multilineTextAlignment(.center)
-
-            Text(copy[.eightMinutes])
-                .font(.custom("Georgia", size: 22))
-                .foregroundStyle(Color.ankyMuted)
-        }
-        .padding(.bottom, 28)
-    }
-
-    private func glyphStage(size: CGSize) -> some View {
-        let baseSize = min(size.width * 0.62, 260)
-        let dynamicSize = min(baseSize * max(model.rhythmMultiplier, 1), size.height * 0.78)
-
-        return FracturedGlyphView(
-            glyph: model.currentDisplayGlyph,
-            fontSize: max(dynamicSize, 92),
-            opacity: model.glyphOpacity,
-            fractureProgress: model.glyphFractureProgress,
-            isCharged: model.hasCrossedThreshold,
-            pulseCount: model.glyphPulseCount
-        )
-        .frame(maxWidth: .infinity)
-    }
-
-    private func pausedOverlay(copy: WritingExperienceStrings, bottomPadding: CGFloat) -> some View {
-        VStack {
-            Spacer()
-
-            VStack(spacing: 14) {
-                Button {
-                    model.resumeManually()
-                } label: {
-                    Text(copy[.continueAction])
-                        .font(.custom("Righteous-Regular", size: 18))
-                        .foregroundStyle(Color.ankyInk)
-                        .padding(.horizontal, 24)
-                        .frame(height: 52)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color.ankyPanelRaised.opacity(0.95))
-                                .overlay(
-                                    Capsule(style: .continuous)
-                                        .stroke(Color.ankyGold.opacity(0.22), lineWidth: 1)
-                                )
-                        )
-                }
-                .buttonStyle(.plain)
-
-                Text(copy[.resumeHint])
-                    .font(.custom("Georgia", size: 15))
-                    .foregroundStyle(Color.ankyMuted)
-            }
-            .padding(.bottom, bottomPadding)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.ankyBlack.opacity(0.24))
-    }
-
-    private var frozenExperienceBackdrop: some View {
-        VStack(spacing: 0) {
-            Spacer(minLength: 0)
-
-            FracturedGlyphView(
-                glyph: model.currentDisplayGlyph,
-                fontSize: 190,
-                opacity: model.completedCapture?.qualifiesForAnky == true ? 0.18 : 0.1,
-                fractureProgress: 1,
-                isCharged: model.completedCapture?.qualifiesForAnky == true,
-                pulseCount: model.glyphPulseCount
-            )
-            .padding(.horizontal, 28)
-
-            Spacer(minLength: 0)
-
-            if model.hasStarted {
-                WritingRibbonView(
-                    characters: model.ribbonCharacters,
-                    fontSize: CGFloat(16) * model.rhythmMultiplier,
-                    pulseCount: model.glyphPulseCount
-                )
-                .padding(.horizontal, 14)
-                .padding(.bottom, 16)
-                .opacity(0.34)
-            }
-        }
-        .allowsHitTesting(false)
-    }
-
-    private func incompleteCompletion(copy: WritingExperienceStrings) -> some View {
-        VStack(spacing: 8) {
-            Spacer()
-
-            Button {
-                model.reset(for: appState.prompt)
-            } label: {
-                Text(copy[.tryAgainAction])
-                    .font(.custom("Georgia", size: 24))
-                    .foregroundStyle(Color.ankyInk)
-                    .padding(.horizontal, 26)
-                    .frame(height: 56)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(Color.ankyPanel.opacity(0.78))
-                            .overlay(
-                                Capsule(style: .continuous)
-                                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                            )
-                    )
-            }
-            .buttonStyle(.plain)
-
-            Text(copy[.eightMinutes])
-                .font(.custom("Georgia", size: 13))
-                .foregroundStyle(Color.ankyMuted)
-
-            Spacer(minLength: 150)
-        }
-        .padding(.horizontal, 24)
-    }
-
-    private func successfulCompletion(copy: WritingExperienceStrings) -> some View {
-        let appCopy = AppCopy.current
-
-        return ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 20) {
-                Spacer(minLength: 90)
-
-                if model.isSubmitting || (model.completedCapture?.qualifiesForAnky == true && model.outcome == nil) {
-                    submissionCard(
-                        title: copy[.ankyListeningTitle],
-                        body: copy[.ankyListeningBody],
-                        loading: true
-                    )
-                } else if let outcome = model.outcome {
-                    switch outcome.delivery {
-                    case .synced:
-                        submissionCard(
-                            title: copy[.ankyBornTitle],
-                            body: copy[.ankyBornBody],
-                            loading: false
-                        )
-
-                        Button {
-                            appState.currentTab = .ankys
-                            model.reset(for: appState.prompt)
-                        } label: {
-                            primaryActionLabel(appCopy[.openAnkysAction])
-                        }
-                        .buttonStyle(.plain)
-
-                    case .queued:
-                        submissionCard(
-                            title: copy[.writingSafeTitle],
-                            body: copy[.writingSafeBody],
-                            loading: false
-                        )
-
-                    case .failed(let message):
-                        VStack(alignment: .leading, spacing: 10) {
-                            submissionCard(
-                                title: copy[.writingSafeTitle],
-                                body: copy[.writingSafeBody],
-                                loading: false
-                            )
-
-                            Text(message)
-                                .font(.custom("Georgia", size: 14))
-                                .foregroundStyle(Color.ankyMuted)
-                        }
-                    }
-
-                    Button {
-                        model.reset(for: appState.prompt)
-                    } label: {
-                        secondaryActionLabel(copy[.writeAgainAction])
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Spacer(minLength: 120)
-            }
-            .padding(.horizontal, 22)
-        }
-    }
-
-    private func submissionCard(title: String, body: String, loading: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            if loading {
-                ProgressView()
-                    .tint(Color.ankyGold)
-            }
-
-            Text(title)
-                .font(.custom("Righteous-Regular", size: 30))
-                .foregroundStyle(Color.ankyInk)
-
-            Text(body)
-                .font(.custom("Georgia", size: 18))
-                .foregroundStyle(Color.ankyInk.opacity(0.9))
-                .lineSpacing(6)
-        }
-        .padding(24)
-        .background(cardBackground)
-    }
-
-    private var cardBackground: some View {
-        RoundedRectangle(cornerRadius: 30, style: .continuous)
-            .fill(Color.ankyPanelRaised.opacity(0.92))
-            .overlay(
-                RoundedRectangle(cornerRadius: 30, style: .continuous)
-                    .stroke(Color.ankyGold.opacity(0.12), lineWidth: 1)
-            )
-    }
-
-    private func primaryActionLabel(_ title: String) -> some View {
-        HStack {
-            Text(title)
-                .font(.custom("Righteous-Regular", size: 18))
-            Spacer()
-            Image(systemName: "arrow.right")
-                .font(.system(size: 14, weight: .bold))
-        }
-        .foregroundStyle(Color.ankyBlack)
-        .padding(.horizontal, 20)
-        .frame(height: 56)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(Color.ankyGold)
-        )
-    }
-
-    private func secondaryActionLabel(_ title: String) -> some View {
-        Text(title)
-            .font(.custom("Righteous-Regular", size: 17))
-            .foregroundStyle(Color.ankyInk)
-            .frame(maxWidth: .infinity)
-            .frame(height: 54)
-            .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color.ankyPanel.opacity(0.88))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                    )
-            )
-    }
-
-    private func metricPill(value: String, label: String, accent: Bool) -> some View {
-        HStack(spacing: 8) {
-            Text(value)
-                .font(.custom("Righteous-Regular", size: 16))
-                .foregroundStyle(accent ? Color.ankyGold : Color.ankyInk)
-
-            Text(label)
-                .font(.custom("Righteous-Regular", size: 11))
-                .foregroundStyle(Color.ankyMuted)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
-        .background(
-            Capsule(style: .continuous)
-                .fill(Color.ankyPanel.opacity(0.84))
-        )
-    }
-
-    private func keyboardBottomPadding(for safeAreaBottom: CGFloat) -> CGFloat {
-        max(keyboardOverlap, safeAreaBottom) + floatingBottomPadding
-    }
-
-    private func updateKeyboardOverlap(from note: Notification) {
-        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
-            return
-        }
-
-        let screenMaxY = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .first(where: { $0.activationState == .foregroundActive })?
-            .screen
-            .bounds
-            .maxY
-            ?? UIApplication.shared.connectedScenes
-                .compactMap { ($0 as? UIWindowScene)?.screen.bounds.maxY }
-                .first
-            ?? frame.maxY
-        let overlap = max(0, screenMaxY - frame.minY)
-        let duration = (note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.22
-        let curveRaw = (note.userInfo?[UIResponder.keyboardAnimationCurveUserInfoKey] as? Int) ?? UIView.AnimationCurve.easeInOut.rawValue
-
-        withAnimation(animation(for: duration, curveRawValue: curveRaw)) {
-            keyboardOverlap = overlap
-        }
-    }
-
-    private func animation(for duration: Double, curveRawValue: Int) -> Animation {
-        switch UIView.AnimationCurve(rawValue: curveRawValue) {
-        case .easeIn:
-            return .easeIn(duration: duration)
-        case .easeOut:
-            return .easeOut(duration: duration)
-        case .linear:
-            return .linear(duration: duration)
-        default:
-            return .easeInOut(duration: duration)
-        }
-    }
-}
-
-private struct HeartLifeView: View {
-    let fill: Double
-
-    var body: some View {
-        ZStack {
-            Image(systemName: "heart")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.12))
-
-            Image(systemName: "heart.fill")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(LinearGradient.ankyWarmGlow)
-                .mask(alignment: .leading) {
-                    Rectangle()
-                        .frame(width: CGFloat(16) * CGFloat(fill))
-                }
-        }
-        .frame(width: 18, height: 18)
-    }
-}
-
-private struct FracturedGlyphView: View {
-    let glyph: String
-    let fontSize: CGFloat
-    let opacity: Double
-    let fractureProgress: Double
-    let isCharged: Bool
-    let pulseCount: Int
-
-    var body: some View {
-        ZStack {
-            baseGlyph
-
-            ForEach(Array(Self.shards.enumerated()), id: \.offset) { index, shard in
-                glyphLayer
-                    .mask(ShardMask(shard: shard))
-                    .offset(
-                        x: shard.xDrift * fractureProgress,
-                        y: shard.yDrift * fractureProgress
-                    )
-                    .rotationEffect(.degrees(Double(shard.rotation) * fractureProgress))
-                    .opacity(opacity * (0.2 + (fractureProgress * 0.7)))
-            }
-        }
-        .scaleEffect(CGFloat(1 + (fractureProgress * 0.03) + (pulseScale * 0.035)))
-        .animation(.spring(response: 0.35, dampingFraction: 0.78), value: pulseScale)
-        .onChange(of: pulseCount) { _, _ in
-            pulseScale = 1
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) {
-                pulseScale = 0
-            }
-        }
-    }
-
-    @State private var pulseScale = 0.0
-
-    private var baseGlyph: some View {
-        glyphLayer
-            .opacity(opacity)
-            .blur(radius: fractureProgress * 1.4)
-    }
-
-    private var glyphLayer: some View {
-        Text(glyph)
-            .font(.system(size: fontSize, weight: .semibold, design: .serif))
-            .foregroundStyle(
-                LinearGradient(
-                    colors: isCharged
-                        ? [Color.ankyInk, Color.ankyGold.opacity(0.92), Color.ankyInk]
-                        : [Color.ankyInk, Color.white.opacity(0.88), Color.ankyInk],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
-            .shadow(color: (isCharged ? Color.ankyGold : Color.ankyPurpleSoft).opacity(0.2 + (fractureProgress * 0.2)), radius: 24)
-    }
-
-    fileprivate struct ShardConfiguration {
-        let start: CGFloat
-        let end: CGFloat
-        let topInset: CGFloat
-        let bottomInset: CGFloat
-        let xDrift: CGFloat
-        let yDrift: CGFloat
-        let rotation: CGFloat
-    }
-
-    private static let shards: [ShardConfiguration] = [
-        .init(start: 0.00, end: 0.18, topInset: 0.00, bottomInset: 0.03, xDrift: -10, yDrift: -18, rotation: -4),
-        .init(start: 0.18, end: 0.37, topInset: -0.02, bottomInset: 0.02, xDrift: 14, yDrift: -8, rotation: 5),
-        .init(start: 0.37, end: 0.58, topInset: 0.01, bottomInset: -0.02, xDrift: -18, yDrift: 10, rotation: -6),
-        .init(start: 0.58, end: 0.79, topInset: -0.01, bottomInset: 0.03, xDrift: 16, yDrift: 14, rotation: 6),
-        .init(start: 0.79, end: 1.00, topInset: 0.02, bottomInset: 0.00, xDrift: -8, yDrift: 18, rotation: -4),
-    ]
-}
-
-private struct ShardMask: Shape {
-    let shard: FracturedGlyphView.ShardConfiguration
-
-    func path(in rect: CGRect) -> Path {
-        let top = rect.height * shard.start
-        let bottom = rect.height * shard.end
-        let topOffset = rect.height * shard.topInset
-        let bottomOffset = rect.height * shard.bottomInset
-
-        var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: top + topOffset))
-        path.addLine(to: CGPoint(x: rect.maxX, y: top - topOffset))
-        path.addLine(to: CGPoint(x: rect.maxX, y: bottom + bottomOffset))
-        path.addLine(to: CGPoint(x: rect.minX, y: bottom - bottomOffset))
-        path.closeSubpath()
-        return path
-    }
-}
-
-private struct WritingRibbonView: View {
-    let characters: [String]
-    let fontSize: CGFloat
-    let pulseCount: Int
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: max(fontSize * 0.18, 4)) {
-                    ForEach(Array(characters.enumerated()), id: \.offset) { index, character in
-                        Text(character)
-                            .font(.system(size: fontSize, weight: .medium, design: .serif))
-                            .foregroundStyle(Color.white.opacity(0.84))
-                            .shadow(color: accentColor(for: index).opacity(0.18), radius: 8)
-                    }
-
-                    Color.clear
-                        .frame(width: 1, height: 1)
-                        .id("tail")
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 18)
-            }
-            .mask(
-                LinearGradient(
-                    colors: [.clear, .white, .white, .clear],
-                    startPoint: .leading,
-                    endPoint: .trailing
-                )
-            )
-            .frame(height: 78)
-            .background(
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(Color.ankyBlack.opacity(0.76))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                            .stroke(Color.white.opacity(0.04), lineWidth: 1)
-                    )
-            )
-            .onAppear {
-                proxy.scrollTo("tail", anchor: .trailing)
-            }
-            .onChange(of: characters.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.18)) {
-                    proxy.scrollTo("tail", anchor: .trailing)
-                }
-            }
-            .onChange(of: pulseCount) { _, _ in
-                withAnimation(.easeOut(duration: 0.16)) {
-                    proxy.scrollTo("tail", anchor: .trailing)
-                }
-            }
-        }
-    }
-
-    private func accentColor(for index: Int) -> Color {
-        let colors: [Color] = [
-            .red,
-            .orange,
-            .yellow,
-            .green,
-            .cyan,
-            .blue,
-            .purple,
-        ]
-        return colors[index % colors.count]
-    }
-}
-
-private struct WritingHistorySheet: View {
-    @Environment(AppState.self) private var appState
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView(showsIndicators: false) {
-                LazyVStack(spacing: 16) {
-                    ForEach(appState.writingHistory) { entry in
-                        WritingHistoryRow(entry: entry)
-                    }
-                }
-                .padding(20)
-            }
-            .background(Color.ankyBlack.ignoresSafeArea())
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Text("Writing History")
-                        .font(.custom("Righteous-Regular", size: 18))
-                        .foregroundStyle(Color.ankyInk)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("Done") {
-                        dismiss()
-                    }
-                    .foregroundStyle(Color.ankyGold)
-                }
-            }
-        }
-        .presentationBackground(Color.ankyBlack)
-        .task {
-            await appState.refreshWritings()
-        }
-    }
-}
-
-private struct WritingHistoryRow: View {
-    let entry: CachedWritingEntry
-    @State private var expanded = false
-
-    private let copy = WritingExperienceStrings.current
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(entry.createdAtLabel)
-                        .font(.custom("Righteous-Regular", size: 15))
-                        .foregroundStyle(Color.ankyInk)
-
-                    Text("\(entry.durationLabel) · \(entry.wordCount) \(copy[.wordsLabel])")
-                        .font(.custom("Georgia", size: 14))
-                        .foregroundStyle(Color.ankyMuted)
-                }
-
-                Spacer()
-
-                if entry.isAnky {
-                    Text("ANKY")
-                        .font(.custom("Righteous-Regular", size: 11))
-                        .foregroundStyle(Color.ankyGold)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(Color.ankyPanel.opacity(0.95))
-                        )
-                }
-            }
-
-            if entry.isAnky {
-                ankyImage
-            }
-
-            Text(entry.content)
-                .font(.custom("Georgia", size: 17))
-                .foregroundStyle(Color.ankyInk.opacity(0.9))
-                .lineSpacing(6)
-                .lineLimit(expanded ? nil : 6)
-
-            Button(expanded ? "Show less" : "Read full writing") {
-                expanded.toggle()
-            }
-            .font(.custom("Righteous-Regular", size: 12))
-            .foregroundStyle(Color.ankyGold)
-            .buttonStyle(.plain)
-        }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .fill(Color.ankyPanelRaised.opacity(0.92))
-        )
-    }
-
-    @ViewBuilder
-    private var ankyImage: some View {
-        if let imageURL = entry.remoteImageURL {
-            AsyncImage(url: imageURL) { phase in
-                switch phase {
-                case .success(let image):
-                    image
-                        .resizable()
-                        .scaledToFill()
-                case .failure:
-                    imagePlaceholder("Image unavailable.")
-                case .empty:
-                    imagePlaceholder("Loading image.")
-                @unknown default:
-                    imagePlaceholder("Loading image.")
-                }
-            }
-            .frame(height: 180)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        } else {
-            imagePlaceholder("Image preparing.")
-        }
-    }
-
-    private func imagePlaceholder(_ text: String) -> some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .fill(Color.ankyPanel)
-
-            VStack(spacing: 10) {
-                Image(systemName: "sparkles.rectangle.stack")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(Color.ankyPurpleSoft)
-
-                Text(text)
-                    .font(.custom("Righteous-Regular", size: 13))
-                    .foregroundStyle(Color.ankyMuted)
-            }
-        }
-        .frame(height: 180)
-    }
-}
-
-#Preview {
-    WritingsView()
-        .environment(AppState())
-}
+// All view code has been moved to ContentView.swift

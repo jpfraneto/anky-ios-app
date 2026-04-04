@@ -18,3 +18,7 @@ The goal is not to teach Swift in the abstract. The goal is to teach Swift, Swif
 - `003_generated_guidance_and_facilitator_links.md`
 - `004_writing_session_focus_and_true_anky_gating.md`
 - `005_seed_identity_and_v2_unlock_model.md`
+- `006_parent_child_worlds_and_cuentacuentos.md`
+- `007_quick_chat_followups.md`
+- `008_altar_seal_apple_pay_and_qr_auth.md`
+- `009_altar_first_shell_and_daily_keyboard_chat_loop.md`

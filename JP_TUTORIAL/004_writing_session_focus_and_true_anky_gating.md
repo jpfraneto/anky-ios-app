@@ -22,8 +22,8 @@ It now has four phases:
 Why this matters:
 
 - `landing` shows only the minimal prompt state: `Write now` and `8 minutes`.
-- `writing` drives the timer, idle drain, huge current glyph, and bottom ribbon.
-- `paused` happens after the user loses the first life. The writing is frozen, but the session is still alive.
+- `writing` drives the timer, idle drain, the center glyph, the visible writing line, the progress bar, and the bottom status row.
+- `paused` happens after the user loses the first life. The writing is frozen, the session is still alive, and the UI only tells the user to type to resume.
 - `complete` is where the app decides whether to keep the session local or sync a real anky.
 
 This is a useful Swift lesson: the UI is simpler when the model exposes explicit states instead of a pile of booleans that can combine in invalid ways.
@@ -64,8 +64,9 @@ In `WritingsView` inside `Anky/AnkyWritingSession.swift`:
 
 - the view listens for `UIResponder.keyboardWillChangeFrameNotification`
 - it computes a `keyboardOverlap`
-- it reserves bottom space for the keyboard plus the ribbon
+- it reserves bottom space for the keyboard plus the writing footer
 - the glyph stage sizes itself from the remaining visible height
+- it clips footer overflow instead of letting content expand wider than the screen
 
 This mental model is important:
 
@@ -86,7 +87,7 @@ Inside `WritingFlowModel`, a few computed properties now matter a lot:
 - `glyphFractureProgress`
 - `rhythmMultiplier`
 - `currentDisplayGlyph`
-- `ribbonCharacters`
+- `visibleWritingLine`
 
 These are the bridge between raw input data and the visuals.
 
@@ -95,7 +96,7 @@ Examples:
 - `idleDrainProgress` maps the 3s to 8s idle window to `0...1`
 - `glyphOpacity` uses that same number so the glyph fades with the active heart
 - `glyphFractureProgress` uses the same idle window so the crack effect and life drain stay synchronized
-- `rhythmMultiplier` uses recent keystroke deltas to size the bottom ribbon
+- `visibleWritingLine` keeps the newest typed character pinned to the right edge while clipping older overflow
 
 This is the main SwiftUI concept to learn here:
 
@@ -114,17 +115,9 @@ Behavior:
 2. If there is still one extra life, it decrements the count and enters `paused`.
 3. If there are no lives left to spend, the session finishes.
 
-Resume has two paths:
+Resume now happens through typing.
 
-- `resumeFromPauseManually(at:)` for tapping the `Continue` button
-- `resumeFromPauseFromTyping(at:)` for the first printable key after pause
-
-This split exists for a real reason:
-
-- manual resume should restart the idle clock immediately
-- typing resume should not lose the first character or count a fake long keystroke delta from the pause gap
-
-That is a good example of why naming two different functions is better than trying to cram both behaviors into one vague `resume()`.
+The visible UI does not show a `Continue` button anymore. The app keeps the keyboard ready and uses `resumeFromPauseFromTyping(at:)` so the first resumed character is preserved instead of being swallowed by the pause transition.
 
 ## Local-only vs backend-bound sessions
 
@@ -159,7 +152,7 @@ In `submitFinishedCapture(appState:)`:
 
 This is the architectural change that matters most:
 
-- UI behavior and sync behavior are now aligned with the new product rule even though `/swift/v1/write` is still behind the web flow
+- UI behavior and sync behavior are now aligned with the `/swift/v2/write` product rule
 
 ### Legacy migration
 
@@ -190,7 +183,7 @@ This file does three jobs:
 Why that structure is useful for JP:
 
 - you can inspect one file to see exactly what the write experience says
-- the view code stays readable because it only asks for `copy[.continueAction]` or `copy[.wordsLabel]`
+- the view code stays readable because it only asks for `copy[.resumeHint]` or `copy[.wordsLabel]`
 - adding or updating a translation is a data change, not a view rewrite
 
 This is a pragmatic localization approach for a still-moving product surface.
@@ -204,7 +197,7 @@ From keyboard to backend:
 3. The model updates timer-related state, rhythm data, current glyph data, and pause/resume state.
 4. When the session ends, the model creates a `LocalWritingCapture`.
 5. If the capture is incomplete, `AppState.recordWriting(..., syncState: .localOnly)` stores it only on-device.
-6. If it is a true anky, `AnkyAPI.submitWriting` sends it to `/swift/v1/write`.
+6. If it is a true anky, `AnkyAPI.submitWriting` sends it to `/swift/v2/write`.
 7. After a successful real anky, `AppState.refreshUserProfile()` and `AppState.refreshWritings()` pull the latest backend state back into the app.
 
 That round trip is the native-app contract with the backend system.
@@ -214,7 +207,7 @@ That round trip is the native-app contract with the backend system.
 If something looks wrong, start here:
 
 1. The first resumed character disappears.
-   Check the difference between `resumeFromPauseFromTyping(at:)` and `resumeFromPauseManually(at:)`.
+   Check `resumeFromPauseFromTyping(at:)` and confirm the hidden composer is still focused during the paused state.
 
 2. Short sessions are syncing.
    Check `submitFinishedCapture(appState:)`, `WritingCacheStore.migrateLegacyShortPendingWrites()`, and `PendingAction.isObsoleteShortWrite`.
@@ -222,8 +215,8 @@ If something looks wrong, start here:
 3. The keyboard shows but nothing is visible.
    That is expected during writing now. Inspect `AnkyComposerTextView` and confirm `isVisuallyHidden` is intentional.
 
-4. The ribbon size feels wrong.
-   Check `rhythmMultiplier` and the `fontSize` passed into `WritingRibbonView`.
+4. The bottom writing strip feels wrong.
+   Check `visibleWritingLine`, `WritingLineView`, and the footer sizing in `bottomWritingStack(copy:availableWidth:)`.
 
 5. The current glyph fades at the wrong time.
    Check `idleDrainProgress`, `glyphOpacity`, and `glyphFractureProgress` together. They should all be driven by the same idle window.

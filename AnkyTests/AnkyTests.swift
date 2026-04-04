@@ -5,28 +5,14 @@
 //  Created by kithkui on 07-03-26.
 //
 
+import CryptoKit
 import Foundation
 import Testing
 @testable import Anky
 
 struct AnkyTests {
-    private let vectorEntropyHex = "0000000000000000000000000000000000000000000000000000000000000000"
-    private let vectorMnemonic = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art"
-    private let vectorSeedHex = "408b285c123836004f4b8842c89324c1f01382450c0d439af345ba7fc49acf705489c6fc77dbd4e3dc1dd8cc6bc9f043db8ada1e243c4a0eafb290d399480840"
-    private let vectorPrivateKeyHex = "1053fae1b3ac64f178bcc21026fd06a3f4544ec2f35338b001f02d1d8efa3d5f"
-    private let vectorCompressedPublicKeyHex = "02dc286c821c7490afbe20a79d13123b9f41f3d7ef21e4a9caacd22f5983b28eca"
-    private let vectorUncompressedPublicKeyHex = "04dc286c821c7490afbe20a79d13123b9f41f3d7ef21e4a9caacd22f5983b28eca0e4dbd5624505a2c968fec15f25990c7324736890f6d0f74241f98e4259c1d42"
-    private let vectorWalletAddress = "0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb"
-    private let vectorChallengeMessage = """
-anky.app seed identity sign in
-
-wallet address: 0xF278cF59F82eDcf871d630F28EcC8056f25C1cdb
-challenge id: 2d3b2f85-b7e1-4495-8f2f-9f3d9b9ed211
-nonce: 5f2c4e5d6d4e0d6ff0e4f2ed57fe2c1f9d0c4a7b8f2712bda20f450f9dc22b22
-
-sign this only inside the anky app.
-"""
-    private let vectorSignatureHex = "ab6d76173e510ed88f93adc2729fabf1de2af03208115665a21a5e8da9cd2e7650203cc71fcb5b68a18008b799e7abc2bd4b939d32a7dba0672134c25a075e4e1b"
+    // SLIP-0010 test vector: "abandon" x11 + "about" (standard BIP39 12-word test mnemonic)
+    private let testMnemonic12 = "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
 
     @Test("API routes stay under /swift/v2")
     func apiRouteResolutionUsesTheV2BasePath() throws {
@@ -137,24 +123,24 @@ sign this only inside the anky app.
         #expect(fallback[.writeNow] == "Write now")
     }
 
-    @Test("App copy localizes the backup ceremony and tab labels")
+    @Test("App copy resolves the welcome flow copy and tab labels")
     func appCopyLocalizationResolvesCleanly() {
         let spanish = AppCopy(languageCode: "es")
         let fallback = AppCopy(languageCode: "xx")
 
-        #expect(spanish[.backupTitle] == "Tu frase de recuperacion")
-        #expect(spanish[.seedTab] == "SEMILLA")
-        #expect(fallback[.backupSavedAction] == "I saved it")
+        #expect(spanish[.youTab] == "Tu")
+        #expect(fallback[.welcomeContinueAction] == "Continue")
+        #expect(fallback[.unlockAction] == "Unlock")
     }
 
-    @Test("Canonical EVM derivation path stays frozen")
+    @Test("Canonical Solana derivation path stays frozen")
     func canonicalDerivationPathStaysFrozen() {
-        #expect(SeedIdentityCrypto.canonicalDerivationPath == "m/44'/60'/0'/0/0")
+        #expect(SeedIdentityCrypto.canonicalDerivationPath == "m/44'/501'/0'/0'")
     }
 
     @Test("Seed phrases reject an invalid checksum")
     func seedPhraseValidationRejectsBadChecksum() {
-        let invalidMnemonic = vectorMnemonic.replacingOccurrences(of: " art", with: " abandon")
+        let invalidMnemonic = testMnemonic12.replacingOccurrences(of: " about", with: " abandon")
 
         do {
             _ = try SeedIdentityCrypto.normalizedMnemonic(from: invalidMnemonic)
@@ -166,74 +152,217 @@ sign this only inside the anky app.
         }
     }
 
-    @Test("Seed vectors match mnemonic, seed, EVM path, public keys, and address")
-    func seedVectorsMatchKnownOutputs() throws {
-        let entropy = try #require(Data(hexString: vectorEntropyHex))
-        let mnemonic = try SeedIdentityCrypto.mnemonic(fromEntropy: entropy)
-        let normalizedMnemonic = try SeedIdentityCrypto.normalizedMnemonic(from: vectorMnemonic.uppercased())
-        let seed = try SeedIdentityCrypto.mnemonicSeed(from: vectorMnemonic)
-        let privateKeyData = try SeedIdentityCrypto.derivedPrivateKey(from: vectorMnemonic)
-        let compressedPublicKey = try SeedIdentityCrypto.compressedPublicKey(fromPrivateKey: privateKeyData)
-        let uncompressedPublicKey = try SeedIdentityCrypto.uncompressedPublicKey(fromPrivateKey: privateKeyData)
+    @Test("SLIP-0010 Solana derivation produces a valid Ed25519 keypair and base58 address")
+    func solanaSeedDerivationProducesValidKeypair() throws {
+        let privateKeyData = try SeedIdentityCrypto.derivedPrivateKey(from: testMnemonic12)
+        let publicKeyData = try SeedIdentityCrypto.publicKey(fromPrivateKey: privateKeyData)
         let walletAddress = try SeedIdentityCrypto.walletAddress(fromPrivateKey: privateKeyData)
 
-        #expect(mnemonic == vectorMnemonic)
-        #expect(normalizedMnemonic == vectorMnemonic)
-        #expect(seed.hexString == vectorSeedHex)
-        #expect(privateKeyData.hexString == vectorPrivateKeyHex)
-        #expect(compressedPublicKey.hexString == vectorCompressedPublicKeyHex)
-        #expect(uncompressedPublicKey.hexString == vectorUncompressedPublicKeyHex)
-        #expect(walletAddress == vectorWalletAddress)
+        // Private key is 32 bytes
+        #expect(privateKeyData.count == 32)
+
+        // Public key is 32 bytes (Ed25519)
+        #expect(publicKeyData.count == 32)
+
+        // Wallet address is base58-encoded and has reasonable length (32-44 chars)
+        #expect(walletAddress.count >= 32)
+        #expect(walletAddress.count <= 44)
+
+        // Should not start with 0x (not Ethereum)
+        #expect(!walletAddress.hasPrefix("0x"))
+
+        // Base58 round-trip: decode the address and re-encode
+        let decoded = Base58.decode(walletAddress)
+        #expect(decoded != nil)
+        #expect(decoded?.count == 32)
+        #expect(Base58.encode(decoded!) == walletAddress)
     }
 
-    @Test("Ethereum challenge signatures match the known vector and recover the wallet address")
-    func seedSignatureVectorVerifies() throws {
-        let privateKeyData = try SeedIdentityCrypto.derivedPrivateKey(from: vectorMnemonic)
-        let signature = try SeedIdentityCrypto.sign(message: Data(vectorChallengeMessage.utf8), privateKeyData: privateKeyData)
-        let recoveredWalletAddress = try SeedIdentityCrypto.recoverWalletAddress(
-            message: Data(vectorChallengeMessage.utf8),
-            signatureData: signature
+    @Test("Ed25519 signature is valid and verifiable")
+    func ed25519SignatureVerifies() throws {
+        let privateKeyData = try SeedIdentityCrypto.derivedPrivateKey(from: testMnemonic12)
+        let publicKeyData = try SeedIdentityCrypto.publicKey(fromPrivateKey: privateKeyData)
+        let message = Data("anky.app sign-in challenge".utf8)
+
+        let signature = try SeedIdentityCrypto.sign(message: message, privateKeyData: privateKeyData)
+
+        // Ed25519 signature is 64 bytes
+        #expect(signature.count == 64)
+
+        // Signature should verify
+        let valid = try SeedIdentityCrypto.verify(message: message, signature: signature, publicKeyData: publicKeyData)
+        #expect(valid)
+
+        // Tampered message should not verify
+        let tampered = Data("tampered message".utf8)
+        let invalidVerify = try SeedIdentityCrypto.verify(message: tampered, signature: signature, publicKeyData: publicKeyData)
+        #expect(!invalidVerify)
+    }
+
+    @Test("Mnemonic round-trip: generate, normalize, derive, and address all work")
+    func mnemonicRoundTrip() throws {
+        let mnemonic = try SeedIdentityCrypto.generateMnemonic()
+        let words = mnemonic.split(separator: " ")
+        #expect(words.count == 12)
+
+        // Should normalize without error
+        let normalized = try SeedIdentityCrypto.normalizedMnemonic(from: mnemonic)
+        #expect(normalized == mnemonic)
+
+        // Should derive a key and address
+        let privateKey = try SeedIdentityCrypto.derivedPrivateKey(from: mnemonic)
+        #expect(privateKey.count == 32)
+
+        let address = try SeedIdentityCrypto.walletAddress(fromPrivateKey: privateKey)
+        #expect(address.count >= 32)
+
+        // Same mnemonic should produce same key
+        let privateKey2 = try SeedIdentityCrypto.derivedPrivateKey(from: mnemonic)
+        #expect(privateKey == privateKey2)
+    }
+
+    @Test("Base58 encoding and decoding are consistent")
+    func base58RoundTrip() {
+        let testData = Data([1, 2, 3, 4, 5, 100, 200, 255, 0, 0, 42])
+        let encoded = Base58.encode(testData)
+        let decoded = Base58.decode(encoded)
+        #expect(decoded == testData)
+
+        // Leading zeros preserved
+        let withLeadingZeros = Data([0, 0, 0, 1, 2, 3])
+        let encoded2 = Base58.encode(withLeadingZeros)
+        #expect(encoded2.hasPrefix("111")) // Three leading '1's for three zero bytes
+        let decoded2 = Base58.decode(encoded2)
+        #expect(decoded2 == withLeadingZeros)
+    }
+
+    @Test("Kingdom derivation works with Solana base58 addresses")
+    func kingdomDerivationFromBase58() throws {
+        let privateKey = try SeedIdentityCrypto.derivedPrivateKey(from: testMnemonic12)
+        let address = try SeedIdentityCrypto.walletAddress(fromPrivateKey: privateKey)
+        let kingdom = Kingdom.from(walletAddress: address)
+
+        // Should produce a valid kingdom (0-7)
+        #expect(kingdom.rawValue >= 0 && kingdom.rawValue <= 7)
+
+        // Should be deterministic
+        let kingdom2 = Kingdom.from(walletAddress: address)
+        #expect(kingdom == kingdom2)
+    }
+
+    @Test("AnkyProtocol seals and decrypts a session round-trip")
+    func sealAndDecryptRoundTrip() throws {
+        // Ensure keypair exists for test
+        try AnkyProtocol.ensureKeypair()
+
+        let content = "this is a writing session about consciousness and the nature of reality"
+        let metadata = SessionMetadata(
+            sessionId: "test-session-1",
+            timestamp: Date(),
+            durationSeconds: 500,
+            kingdom: 3,
+            wordCount: 12,
+            keystrokeCount: 300,
+            walletAddress: "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"
         )
 
-        #expect(signature.hexString == vectorSignatureHex)
-        #expect(recoveredWalletAddress == vectorWalletAddress)
+        let sealed = try AnkyProtocol.sealSession(content: content, metadata: metadata)
+
+        // Verify sealed session fields are populated
+        #expect(!sealed.ciphertext.isEmpty)
+        #expect(!sealed.nonce.isEmpty)
+        #expect(!sealed.tag.isEmpty)
+        #expect(!sealed.userEncryptedKey.isEmpty)
+        #expect(!sealed.ankyEncryptedKey.isEmpty)
+        #expect(sealed.sessionHash.count == 64) // SHA-256 hex = 64 chars
+        #expect(sealed.sessionId == "test-session-1")
+
+        // Decrypt with user's own key
+        let decrypted = try AnkyProtocol.decryptOwnSession(sealed: sealed)
+        #expect(decrypted == content)
     }
 
-    @Test("Live backend EVM challenge flow can be run when the hosted validator accepts 0x addresses")
-    func liveBackendChallengeFlow() async throws {
-        guard ProcessInfo.processInfo.environment["ANKY_LIVE_BACKEND"] == "1" else { return }
-
-        let api = AnkyAPI(baseURL: URL(string: "https://anky.app/swift/v2")!)
-        let privateKeyData = try SeedIdentityCrypto.derivedPrivateKey(from: vectorMnemonic)
-        let walletAddress = try SeedIdentityCrypto.walletAddress(fromPrivateKey: privateKeyData)
-        let challenge = try await api.authChallenge(walletAddress: walletAddress)
-        let signature = try SeedIdentityCrypto.sign(message: Data(challenge.message.utf8), privateKeyData: privateKeyData)
-        let verify = try await api.verifyAuthChallenge(
-            walletAddress: walletAddress,
-            challengeID: challenge.challengeId,
-            signature: signature.hexStringPrefixed
+    @Test("AnkyProtocol session hash is SHA-256 of ciphertext, not plaintext")
+    func sessionHashMatchesCiphertextSHA256() throws {
+        try AnkyProtocol.ensureKeypair()
+        let content = "test content for hashing"
+        let metadata = SessionMetadata(
+            sessionId: "hash-test",
+            timestamp: Date(),
+            durationSeconds: 60,
+            kingdom: 0,
+            wordCount: 4,
+            keystrokeCount: 24,
+            walletAddress: ""
         )
 
-        KeychainHelper.delete(AppState.sessionTokenKey)
-        #expect(verify.ok)
-        #expect(verify.walletAddress == walletAddress)
+        let sealed = try AnkyProtocol.sealSession(content: content, metadata: metadata)
+
+        // The hash should match SHA256 of the ciphertext, not the plaintext
+        let ciphertextData = Data(base64Encoded: sealed.ciphertext)!
+        let expectedCiphertextHash = CryptoKit.SHA256.hash(data: ciphertextData)
+            .compactMap { String(format: "%02x", $0) }.joined()
+        #expect(sealed.sessionHash == expectedCiphertextHash)
+
+        // And it should NOT match the plaintext hash (different because session key is random)
+        let plaintextHash = CryptoKit.SHA256.hash(data: Data(content.utf8))
+            .compactMap { String(format: "%02x", $0) }.joined()
+        #expect(sealed.sessionHash != plaintextHash)
     }
-}
 
-private extension Data {
-    init?(hexString: String) {
-        var data = Data(capacity: hexString.count / 2)
-        var index = hexString.startIndex
+    @Test("AnkyProtocol encrypted key packages have correct format")
+    func encryptedKeyPackageFormat() throws {
+        try AnkyProtocol.ensureKeypair()
+        let metadata = SessionMetadata(
+            sessionId: "format-test",
+            timestamp: Date(),
+            durationSeconds: 60,
+            kingdom: 0,
+            wordCount: 1,
+            keystrokeCount: 5,
+            walletAddress: ""
+        )
 
-        while index < hexString.endIndex {
-            let nextIndex = hexString.index(index, offsetBy: 2)
-            guard nextIndex <= hexString.endIndex else { return nil }
-            let byteString = hexString[index..<nextIndex]
-            guard let byte = UInt8(byteString, radix: 16) else { return nil }
-            data.append(byte)
-            index = nextIndex
+        let sealed = try AnkyProtocol.sealSession(content: "hello", metadata: metadata)
+
+        // [32B ephemeral pubkey][12B nonce][32B encrypted key + 16B tag] = 92 bytes
+        let userKeyData = Data(base64Encoded: sealed.userEncryptedKey)
+        let ankyKeyData = Data(base64Encoded: sealed.ankyEncryptedKey)
+
+        #expect(userKeyData != nil)
+        #expect(ankyKeyData != nil)
+        #expect(userKeyData?.count == 92)
+        #expect(ankyKeyData?.count == 92)
+    }
+
+    @Test("AnkyProtocol decryption with wrong key fails")
+    func decryptWithWrongKeyFails() throws {
+        try AnkyProtocol.ensureKeypair()
+
+        let content = "this is a private writing session that should not be readable by anyone else"
+        let metadata = SessionMetadata(
+            sessionId: "wrong-key-test",
+            timestamp: Date(),
+            durationSeconds: 480,
+            kingdom: 2,
+            wordCount: 14,
+            keystrokeCount: 1200,
+            walletAddress: ""
+        )
+
+        // Seal with the real key
+        let sealed = try AnkyProtocol.sealSession(content: content, metadata: metadata)
+
+        // Generate a completely different keypair
+        let wrongKey = Curve25519.KeyAgreement.PrivateKey()
+
+        // Attempt to decrypt with the wrong key — this MUST fail
+        #expect(throws: (any Error).self) {
+            _ = try AnkyProtocol.decryptSession(sealed: sealed, with: wrongKey)
         }
 
-        self = data
+        // Verify the real key still works
+        let decrypted = try AnkyProtocol.decryptOwnSession(sealed: sealed)
+        #expect(decrypted == content)
     }
 }
