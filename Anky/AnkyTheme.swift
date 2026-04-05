@@ -111,9 +111,41 @@ enum Kingdom: Int, CaseIterable, Codable {
         return Kingdom(rawValue: index) ?? .primordia
     }
 
-    /// Derive the kingdom of the day from the local calendar so the in-app keyboard
-    /// can shift with the shared Ankyverse rhythm instead of a per-user wallet mapping.
+    /// Fixed Ankyverse epoch: April 6, 2026 12:00 UTC
+    static let ankyverseEpoch: TimeInterval = 1775476800
+
+    /// Total cycle: 96 days = 12 waves × 8 days
+    static let ankyverseTotalDays = 96
+    static let ankyverseWaveCount = 12
+    static let ankyverseDaysPerWave = 8
+
+    /// Current ankyverse day number (0-based). Returns nil if before epoch.
+    static func ankyverseDayNumber(for date: Date = .now) -> Int? {
+        let elapsed = date.timeIntervalSince1970 - ankyverseEpoch
+        guard elapsed >= 0 else { return nil }
+        let day = Int(elapsed / 86400)
+        guard day < ankyverseTotalDays else { return nil }
+        return day
+    }
+
+    /// Current wave number (0-based, 0-11)
+    static func ankyverseWave(for date: Date = .now) -> Int? {
+        guard let day = ankyverseDayNumber(for: date) else { return nil }
+        return day / ankyverseDaysPerWave
+    }
+
+    /// Kingdom for a given ankyverse day
+    static func kingdom(forAnkyverseDay day: Int) -> Kingdom {
+        let index = day % allCases.count
+        return allCases[index]
+    }
+
+    /// Derive the kingdom of the day from the fixed Ankyverse calendar.
     static func ankyverseDay(for date: Date = .now, calendar: Calendar = .current) -> Kingdom {
+        if let day = ankyverseDayNumber(for: date) {
+            return kingdom(forAnkyverseDay: day)
+        }
+        // Fallback before epoch: use day-of-year
         let dayOfYear = max((calendar.ordinality(of: .day, in: .year, for: date) ?? 1) - 1, 0)
         let index = dayOfYear % allCases.count
         return allCases[index]

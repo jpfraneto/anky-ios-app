@@ -445,7 +445,6 @@ class ChatViewModel: ObservableObject {
         guard isInSession, !sessionText.isEmpty else { return }
 
         let duration = sessionElapsed
-        let shouldEnterConversation = duration < sessionGoal
         let capturedSessionText = sessionText
         let capture = LocalWritingCapture(
             sessionId: sessionID,
@@ -477,7 +476,7 @@ class ChatViewModel: ObservableObject {
         sessionStartedAt = nil
         lastInputAt = nil
         lastTick = Date()
-        isConversationMode = shouldEnterConversation
+        isConversationMode = true
 
         appendMessage(msg)
         persist(msg, kind: .user(text: capturedSessionText), duration: duration)
@@ -651,84 +650,29 @@ struct AnkyChatView: View {
 
     var body: some View {
         ZStack {
-            AltarView(isRootExperience: true)
-                .environmentObject(appState)
+            Color.ankyVoid.ignoresSafeArea()
 
-            // Top navigation bar
-            VStack {
-                HStack {
-                    // Left: altar arrow
-                    Button { showAltarSheet = true } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.6))
-                            .frame(width: 40, height: 40)
-                            .background(Circle().fill(Color.white.opacity(0.06)))
+            // Primary surface: chat conversation
+            VStack(spacing: 0) {
+                // Top nav bar
+                chatNavBar
+
+                // Messages
+                MessageListView(messages: viewModel.messages, isTyping: viewModel.isAnkyTyping)
+
+                // Bottom input bar
+                ChatInputBarView(
+                    showsReplyComposer: viewModel.shouldShowReplyComposer,
+                    onStartWriting: { presentWritingExperience() },
+                    onStartVoice: {
+                        viewModel.beginSession(voice: true)
+                    },
+                    onSendMessage: { message in
+                        viewModel.sendReply(message)
                     }
-                    .buttonStyle(.plain)
-
-                    Spacer()
-
-                    // Right: user pfp
-                    Button { showProfileSheet = true } label: {
-                        profilePFP
-                            .frame(width: 36, height: 36)
-                            .clipShape(Circle())
-                            .overlay(
-                                Circle()
-                                    .stroke(appState.kingdom.color.opacity(0.3), lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 16)
-                .padding(.top, 8)
-                .opacity(isWritingExperiencePresented ? 0 : 1)
-
-                Spacer()
+                )
             }
-
-            VStack {
-                Spacer()
-
-                VStack(spacing: 10) {
-                    if let unlockErrorMessage, !unlockErrorMessage.isEmpty {
-                        Text(unlockErrorMessage)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(Color.white.opacity(0.7))
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 8)
-                    }
-
-                    Button(action: unlockWritingExperience) {
-                        HStack(spacing: 10) {
-                            Image(systemName: biometricLock.isAvailable ? "faceid" : "sparkles")
-                                .font(.system(size: 17, weight: .semibold))
-
-                            Text(viewModel.hasActiveWritingContext ? "return to writing" : "unlock writing")
-                                .font(.system(size: 16, weight: .semibold, design: .serif))
-                                .textCase(.uppercase)
-                        }
-                        .foregroundStyle(Color(hex: "04040D"))
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 58)
-                        .background(
-                            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                .fill(Color(hex: "E8B84B"))
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    Text("enter through your face, then seal what wants to be said.")
-                        .font(.system(size: 12, weight: .medium, design: .serif))
-                        .foregroundStyle(Color.white.opacity(0.42))
-                        .multilineTextAlignment(.center)
-                }
-                .padding(.horizontal, 24)
-                .padding(.bottom, 34)
-                .opacity(isWritingExperiencePresented ? 0 : 1)
-                .allowsHitTesting(!isWritingExperiencePresented)
-            }
+            .opacity(isWritingExperiencePresented ? 0 : 1)
 
             if isWritingExperiencePresented {
                 WritingExperienceContainer(
@@ -752,6 +696,10 @@ struct AnkyChatView: View {
         }
         .onAppear {
             syncExternalPresentationState()
+            // App opens directly to writing
+            if !viewModel.hasActiveWritingContext && !isWritingExperiencePresented {
+                presentWritingExperience()
+            }
         }
         .onReceive(tick) { now in
             viewModel.sessionTick(at: now)
@@ -827,8 +775,14 @@ struct AnkyChatView: View {
             }
         }
         .onChange(of: viewModel.isInSession) { _, inSession in
-            if !inSession && speechManager.isListening {
-                speechManager.stopListening()
+            if !inSession {
+                if speechManager.isListening {
+                    speechManager.stopListening()
+                }
+                // Auto-dismiss writing experience when session ends — return to chat
+                if isWritingExperiencePresented {
+                    dismissWritingExperience()
+                }
             }
             syncExternalPresentationState()
         }
@@ -871,6 +825,49 @@ struct AnkyChatView: View {
         }
     }
 
+    private var chatNavBar: some View {
+        HStack {
+            // Left: altar
+            Button { showAltarSheet = true } label: {
+                Image(systemName: "flame")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.5))
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(Color.white.opacity(0.06)))
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Text("anky")
+                .font(.system(size: 13, weight: .medium))
+                .kerning(2)
+                .foregroundStyle(Color.white.opacity(0.3))
+
+            Spacer()
+
+            // Right: user pfp
+            Button { showProfileSheet = true } label: {
+                profilePFP
+                    .frame(width: 36, height: 36)
+                    .clipShape(Circle())
+                    .overlay(
+                        Circle()
+                            .stroke(appState.kingdom.color.opacity(0.3), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(Color.ankyVoid)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .frame(height: 0.5)
+        }
+    }
+
     @ViewBuilder
     private var profilePFP: some View {
         if let url = latestAnkyImageURL {
@@ -900,18 +897,6 @@ struct AnkyChatView: View {
                 )
             AnkyMark(size: 16)
                 .opacity(0.5)
-        }
-    }
-
-    private func unlockWritingExperience() {
-        Task {
-            unlockErrorMessage = nil
-            let unlocked = await biometricLock.reauthenticate(reason: "Unlock writing.")
-            if unlocked {
-                presentWritingExperience()
-            } else {
-                unlockErrorMessage = biometricLock.lastError ?? "\(biometricLock.biometryLabel) did not match."
-            }
         }
     }
 
@@ -1083,6 +1068,10 @@ struct FullScreenWritingView: View {
                     .clipped()
                     .position(x: halfW / 2, y: halfH / 2)
                 }
+
+                // Chakra progress bar: red → white over 8 minutes
+                ChakraProgressBar(progress: viewModel.sessionProgress)
+                    .padding(.horizontal, 0)
 
                 if viewModel.isSessionPaused {
                     SessionPauseChoiceView(

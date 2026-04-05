@@ -173,6 +173,49 @@ struct IdleDrainBar: View {
     }
 }
 
+// MARK: - Chakra Progress Bar (8-minute journey, red → white)
+
+struct ChakraProgressBar: View {
+    let progress: Double // 0-1 over 8 minutes
+
+    private static let colors: [Color] = [
+        Color(hex: "ff0000"), // root — red
+        Color(hex: "ff6600"), // sacral — orange
+        Color(hex: "ffcc00"), // solar plexus — yellow
+        Color(hex: "33cc33"), // heart — green
+        Color(hex: "3399ff"), // throat — blue
+        Color(hex: "6633cc"), // third eye — indigo
+        Color(hex: "9933ff"), // crown — violet
+        Color(hex: "ffffff"), // transcendent — white
+    ]
+
+    private var currentColor: Color {
+        let step = min(Int(progress * 8), 7)
+        return Self.colors[step]
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.04))
+
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: Array(Self.colors.prefix(max(Int(progress * 8) + 1, 1))),
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: proxy.size.width * min(progress, 1))
+                    .animation(.easeOut(duration: 0.3), value: progress)
+            }
+        }
+        .frame(height: 3)
+    }
+}
+
 // MARK: - Writing Bottom Bar (checkpoint glow + countdown/countup timer)
 
 struct WritingBottomBar: View {
