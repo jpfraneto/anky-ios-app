@@ -79,7 +79,7 @@ final class WritingFlowModel: ObservableObject {
         case complete
     }
 
-    static let totalLives = 2
+    static let totalLives = 1
 
     @Published var prompt: String
     @Published var phase: Phase = .landing
@@ -110,6 +110,12 @@ final class WritingFlowModel: ObservableObject {
     private(set) var keystrokeDeltas: [Double] = []
     private var lastIdleWarningSecond: Int = 0
     private var didFireThresholdHaptic = false
+
+    // .anky session format tracking
+    private var ankyKeystrokes: [AnkyKeystrokeRecord] = []
+    private var ankyPreviousTextCount: Int = 0
+    private var firstKeystrokeEpochMs: Int64?
+    private(set) var ankySessionString: String?
 
     init(prompt: String) {
         self.prompt = prompt
@@ -229,6 +235,20 @@ final class WritingFlowModel: ObservableObject {
     func handleInput(_ newText: String) {
         let now = Date()
         let sanitized = Self.sanitizedText(newText)
+
+        // Capture new characters for .anky format (forward-only, so diff is the tail)
+        if sanitized.count > ankyPreviousTextCount {
+            let startIdx = sanitized.index(sanitized.startIndex, offsetBy: ankyPreviousTextCount)
+            for char in sanitized[startIdx...] {
+                if ankyKeystrokes.isEmpty {
+                    firstKeystrokeEpochMs = Int64(now.timeIntervalSince1970 * 1000)
+                }
+                let canonical = AnkySessionFileStore.canonicalPayload(for: char)
+                ankyKeystrokes.append(AnkyKeystrokeRecord(payload: canonical, timestamp: now))
+            }
+        }
+        ankyPreviousTextCount = sanitized.count
+
         text = sanitized
 
         guard phase != .complete else { return }
@@ -308,6 +328,10 @@ final class WritingFlowModel: ObservableObject {
         lastDraftSaveAt = 0
         lastCheckpointAt = 0
         keystrokeDeltas = []
+        ankyKeystrokes = []
+        ankyPreviousTextCount = 0
+        firstKeystrokeEpochMs = nil
+        ankySessionString = nil
         WritingSessionStore.clearDraft()
     }
 
@@ -318,105 +342,123 @@ final class WritingFlowModel: ObservableObject {
         isSubmitting = true
         defer { isSubmitting = false }
 
-        // Seal the session (encrypt on-device) before sending anything
-        let sealedSession = sealCaptureIfPossible(capture: capture, appState: appState)
-        if sealedSession == nil {
-            print("[AnkyProtocol] Encryption failed — submitting in degraded mode (plaintext only)")
+        // Relay .anky session to enclave (fire-and-forget)
+        if let sessionString = capture.ankySessionString, let sessionHash = capture.sessionHash {
+            Self.relayAnkySession(sessionString: sessionString, sessionHash: sessionHash)
         }
 
-        // Always try to send to backend (v2 handles short sessions too)
+        // Check authentication first
+        guard await appState.ensureAuthenticatedForWrite() else {
+            if capture.qualifiesForAnky {
+                await appState.queueWrite(capture)
+                appState.recordWriting(capture, response: nil, syncState: .pending)
+                outcome = WritingOutcome(capture: capture, delivery: .queued)
+            } else {
+                appState.recordWriting(capture, response: nil, syncState: .localOnly)
+            }
+            return
+        }
+
+        // Primary path: encrypt on-device and submit via sealed-write endpoint.
+        // Plaintext NEVER leaves the device. The enclave decrypts and generates reflection + image.
         do {
-            guard await appState.ensureAuthenticatedForWrite() else {
-                // Not authenticated — queue if anky-worthy, otherwise save locally
-                if capture.qualifiesForAnky {
-                    await appState.queueWrite(capture)
-                    appState.recordWriting(capture, response: nil, syncState: .pending)
-                    outcome = WritingOutcome(capture: capture, delivery: .queued)
-                } else {
-                    appState.recordWriting(capture, response: nil, syncState: .localOnly)
-                }
-                return
-            }
+            // Fetch enclave public key dynamically (fire-and-forget cache for future calls)
+            await Self.refreshEnclavePublicKeyIfNeeded()
 
-            // TODO: Remove plaintext transmission once enclave reflection pipeline is live.
-            // The sealed envelope sent to POST /api/sessions/seal is the cryptographic source of truth.
-            // Plaintext is only sent now because the reflection generation (Claude API) needs to read it.
-            // When the enclave handles reflection generation, this line gets deleted.
-            let response = try await AnkyAPI.shared.submitWriting(capture.request)
+            let sealedRequest = try AnkyProtocol.sealForWrite(
+                content: capture.text,
+                sessionId: capture.sessionId,
+                duration: capture.duration,
+                wordCount: capture.wordCount
+            )
 
-            // Send sealed session to enclave endpoint (with retry on failure)
-            if let sealed = sealedSession {
-                Task {
-                    do {
-                        _ = try await AnkyAPI.shared.sealSession(sealed)
-                        SealedSessionStore.clearPending(sealed.sessionId)
-                    } catch {
-                        // Queue for retry on next app launch / network reconnection
-                        SealedSessionStore.markPending(sealed.sessionId)
-                    }
-                }
-            }
+            let response = try await AnkyAPI.shared.submitSealedWrite(sealedRequest)
 
-            if response.isAnky && response.persisted == true {
-                await appState.applyPersistedAnkySuccess(capture: capture, response: response)
-                // Auto-mint cNFT + archive to Arweave for every persisted anky
+            if response.isAnky == true {
+                // Build a MobileWriteResponse-compatible record for local bookkeeping
+                let writeResponse = MobileWriteResponse(
+                    ok: response.ok,
+                    sessionId: response.sessionId ?? capture.sessionId,
+                    outcome: "anky",
+                    wordCount: capture.wordCount,
+                    durationSeconds: capture.duration,
+                    flowScore: capture.estimatedFlowScore,
+                    persisted: true,
+                    spawned: SpawnedArtifacts(
+                        ankyId: response.ankyId,
+                        feedback: nil,
+                        meditation: nil,
+                        breathwork: nil,
+                        cuentacuentos: nil
+                    ),
+                    walletAddress: nil,
+                    statusUrl: nil,
+                    ankyResponse: nil,
+                    nextPrompt: nil,
+                    mood: nil,
+                    error: nil
+                )
+                await appState.applyPersistedAnkySuccess(capture: capture, response: writeResponse)
                 Self.autoMintCNFT(sessionId: capture.sessionId, appState: appState)
                 Self.archiveToArweave(sessionId: capture.sessionId, text: capture.text)
                 outcome = Self.remoteOutcome(capture: capture)
-            } else if response.persisted == true {
-                appState.recordWriting(capture, response: response, syncState: .synced)
-                outcome = WritingOutcome(capture: capture, delivery: .synced)
             } else {
-                appState.recordWriting(capture, response: response, syncState: .localOnly)
-                outcome = WritingOutcome(capture: capture, delivery: .failed("saved locally"))
+                appState.recordWriting(capture, response: nil, syncState: .synced)
+                outcome = WritingOutcome(capture: capture, delivery: .synced)
             }
-        } catch let error as AnkyError {
-            if error.isConnectivityIssue || error == .missingSession || error == .unauthorized {
-                if capture.qualifiesForAnky {
-                    await appState.queueWrite(capture)
-                    appState.recordWriting(capture, response: nil, syncState: .pending)
-                    outcome = WritingOutcome(capture: capture, delivery: .queued)
+        } catch {
+            print("[SealedWrite] Primary sealed path failed: \(error.localizedDescription)")
+
+            // Fallback: try the legacy plaintext path so the user still gets a reflection
+            do {
+                let response = try await AnkyAPI.shared.submitWriting(capture.request)
+
+                if response.isAnky && response.persisted == true {
+                    await appState.applyPersistedAnkySuccess(capture: capture, response: response)
+                    Self.autoMintCNFT(sessionId: capture.sessionId, appState: appState)
+                    Self.archiveToArweave(sessionId: capture.sessionId, text: capture.text)
+                    outcome = Self.remoteOutcome(capture: capture)
+                } else if response.persisted == true {
+                    appState.recordWriting(capture, response: response, syncState: .synced)
+                    outcome = WritingOutcome(capture: capture, delivery: .synced)
+                } else {
+                    appState.recordWriting(capture, response: response, syncState: .localOnly)
+                    outcome = WritingOutcome(capture: capture, delivery: .failed("saved locally"))
+                }
+            } catch let fallbackError as AnkyError {
+                if fallbackError.isConnectivityIssue || fallbackError == .missingSession || fallbackError == .unauthorized {
+                    if capture.qualifiesForAnky {
+                        await appState.queueWrite(capture)
+                        appState.recordWriting(capture, response: nil, syncState: .pending)
+                        outcome = WritingOutcome(capture: capture, delivery: .queued)
+                    } else {
+                        appState.recordWriting(capture, response: nil, syncState: .localOnly)
+                    }
                 } else {
                     appState.recordWriting(capture, response: nil, syncState: .localOnly)
+                    outcome = WritingOutcome(
+                        capture: capture,
+                        delivery: .failed(fallbackError.errorDescription ?? "saved locally")
+                    )
                 }
-                return
+            } catch {
+                appState.recordWriting(capture, response: nil, syncState: .localOnly)
+                outcome = WritingOutcome(
+                    capture: capture,
+                    delivery: .failed(error.localizedDescription)
+                )
             }
-
-            appState.recordWriting(capture, response: nil, syncState: .localOnly)
-            outcome = WritingOutcome(
-                capture: capture,
-                delivery: .failed(error.errorDescription ?? "saved locally")
-            )
-        } catch {
-            appState.recordWriting(capture, response: nil, syncState: .localOnly)
-            outcome = WritingOutcome(
-                capture: capture,
-                delivery: .failed(error.localizedDescription)
-            )
         }
     }
 
-    /// Encrypt the session on-device. Encryption is the primary path.
-    /// If it fails, we submit plaintext as a degraded fallback so the user still gets their
-    /// reflection. But this is NOT normal operation.
-    private func sealCaptureIfPossible(capture: LocalWritingCapture, appState: AppState) -> SealedSession? {
+    /// Fetches the enclave public key from the server and caches it for encryption.
+    /// Silent failure — falls back to hardcoded key in AnkyProtocol.
+    private static func refreshEnclavePublicKeyIfNeeded() async {
         do {
-            let walletAddress = (try? SeedIdentityManager.shared.walletAddress()) ?? ""
-            let metadata = SessionMetadata(
-                sessionId: capture.sessionId,
-                timestamp: capture.finishedAt,
-                durationSeconds: capture.duration,
-                kingdom: appState.kingdom.rawValue,
-                wordCount: capture.wordCount,
-                keystrokeCount: capture.keystrokeDeltas.count,
-                walletAddress: walletAddress
-            )
-            let sealed = try AnkyProtocol.sealSession(content: capture.text, metadata: metadata)
-            SealedSessionStore.save(sealed)
-            return sealed
+            let key = try await AnkyAPI.shared.fetchEnclavePublicKey()
+            AnkyProtocol.setEnclavePublicKey(key)
         } catch {
-            print("[AnkyProtocol] Encryption failed — submitting in degraded mode (plaintext only): \(error.localizedDescription)")
-            return nil
+            print("[SealedWrite] Could not fetch enclave public key, using cached/hardcoded: \(error.localizedDescription)")
         }
     }
 
@@ -490,6 +532,33 @@ final class WritingFlowModel: ObservableObject {
         guard hasStarted else { return }
         WritingHaptics.sessionEnded()
 
+        // Build and persist the canonical .anky session artifact before any submit path uses it.
+        ankySessionString = buildAnkySessionString()
+        let sessionArtifact: AnkyStoredSessionArtifact? = ankySessionString.flatMap { string in
+            guard let firstKeystrokeEpochMs else {
+                print("[AnkyFile] Missing first keystroke timestamp for legacy session \(sessionID)")
+                assertionFailure("Missing first keystroke timestamp for canonical .anky file")
+                return nil
+            }
+
+            do {
+                let artifact = try AnkySessionFileStore.sealPartialSession(
+                    sessionString: string,
+                    sessionId: sessionID,
+                    firstKeystrokeEpochMs: firstKeystrokeEpochMs
+                )
+                if !AnkySessionFileStore.verify(filepath: artifact.fileURL.path) {
+                    print("[AnkyFile] Verification failed immediately after write at \(artifact.fileURL.path)")
+                    assertionFailure("Canonical .anky file verification failed")
+                }
+                return artifact
+            } catch {
+                print("[AnkyFile] Failed to persist canonical session file: \(error.localizedDescription)")
+                assertionFailure("Failed to persist canonical .anky file")
+                return nil
+            }
+        }
+
         let capture = LocalWritingCapture(
             sessionId: sessionID,
             prompt: prompt,
@@ -498,7 +567,10 @@ final class WritingFlowModel: ObservableObject {
             wordCount: wordCount,
             keystrokeDeltas: keystrokeDeltas,
             finishedAt: .now,
-            estimatedFlowScore: Self.estimateFlowScore(deltasInMilliseconds: keystrokeDeltas, duration: sessionElapsed)
+            estimatedFlowScore: Self.estimateFlowScore(deltasInMilliseconds: keystrokeDeltas, duration: sessionElapsed),
+            ankySessionString: sessionArtifact?.sessionString ?? ankySessionString,
+            ankyFilePath: sessionArtifact?.fileURL.path,
+            sessionHash: sessionArtifact?.sessionHash
         )
 
         composerFocused = false
@@ -507,6 +579,19 @@ final class WritingFlowModel: ObservableObject {
         completedCapture = capture
         pendingCapture = capture
         WritingSessionStore.clearDraft()
+    }
+
+    /// Builds the canonical .anky session string with the first keystroke epoch on line 1.
+    private func buildAnkySessionString() -> String? {
+        AnkySessionFileStore.buildSessionString(
+            keystrokes: ankyKeystrokes,
+            firstKeystrokeEpochMs: firstKeystrokeEpochMs
+        )
+    }
+
+    func resumeWriting() {
+        guard phase == .paused else { return }
+        resumeFromPauseFromTyping(at: Date())
     }
 
     private func resumeFromPauseFromTyping(at now: Date) {
@@ -540,6 +625,32 @@ final class WritingFlowModel: ObservableObject {
             } catch {
                 PendingMintStore.enqueue(sessionId: sessionId)
                 print("[cNFT] Mint deferred (offline), queued: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// Encrypt and relay a .anky v2 session string to the enclave. Fire-and-forget.
+    static func relayAnkySession(sessionString: String, sessionHash: String) {
+        Task {
+            do {
+                let encrypted = try AnkyProtocol.relayEncrypt(plaintext: sessionString)
+                let writerPubkey = try SeedIdentityManager.shared.walletAddress()
+
+                let request = RelayRequest(
+                    encrypted: RelayEncryptedPayload(
+                        ephemeralPublicKey: encrypted.ephemeralPublicKey.base64EncodedString(),
+                        nonce: encrypted.nonce.base64EncodedString(),
+                        tag: encrypted.tag.base64EncodedString(),
+                        ciphertext: encrypted.ciphertext.base64EncodedString(),
+                        sessionHash: sessionHash
+                    ),
+                    writerPubkey: writerPubkey
+                )
+
+                let response = try await AnkyAPI.shared.relaySession(request)
+                print("[AnkyRelay] Relayed → hash: \(response.hash ?? sessionHash), arweave: \(response.arweaveTx ?? "pending"), solana: \(response.solanaTx ?? "pending")")
+            } catch {
+                print("[AnkyRelay] Relay failed: \(error.localizedDescription)")
             }
         }
     }
@@ -588,9 +699,8 @@ final class WritingFlowModel: ObservableObject {
     }
 
     private static func sanitizedText(_ text: String) -> String {
-        text
-            .replacingOccurrences(of: "\n", with: " ")
-            .replacingOccurrences(of: "\t", with: " ")
+        // v2: newlines and tabs are banned, not converted — strip them
+        text.filter { !$0.isNewline && $0 != "\t" }
     }
 
     private static func displayGlyph(for character: Character) -> String {

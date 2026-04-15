@@ -185,6 +185,110 @@ struct ResponseDecodingTests {
         #expect(item.content == "writing content here")
         #expect(item.durationSeconds == 490)
     }
+
+    @Test("WritingItem decodes nested anky artifact payload")
+    func writingItemDecodesNestedAnkyPayload() throws {
+        let json = """
+        {
+            "id": "w-2",
+            "content": "deep writing content",
+            "duration_seconds": 501,
+            "word_count": 322,
+            "is_anky": true,
+            "created_at": "2026-03-21T10:00:00Z",
+            "anky": {
+                "id": "anky-777",
+                "title": "Ashes That Remember",
+                "reflection": "You kept circling the same wound until it started speaking clearly.",
+                "image_url": "https://cdn.anky.app/images/anky-777.png"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let item = try JSONDecoder().decode(WritingItem.self, from: json)
+
+        #expect(item.id == "w-2")
+        #expect(item.isAnky == true)
+        #expect(item.ankyId == "anky-777")
+        #expect(item.ankyTitle == "Ashes That Remember")
+        #expect(item.response == "You kept circling the same wound until it started speaking clearly.")
+        #expect(item.ankyImagePath == "https://cdn.anky.app/images/anky-777.png")
+    }
+
+    @Test("WritingItem decodes flat anky_reflection payload")
+    func writingItemDecodesFlatAnkyReflection() throws {
+        let json = """
+        {
+            "id": "w-3",
+            "content": "raw writing text",
+            "duration_seconds": 500,
+            "word_count": 310,
+            "is_anky": true,
+            "anky_id": "anky-001",
+            "anky_title": "Ashes That Remember",
+            "anky_image_path": "https://anky.app/data/images/anky-001.png",
+            "anky_reflection": "Anky reflection text",
+            "created_at": "2026-04-07T10:00:00Z"
+        }
+        """.data(using: .utf8)!
+
+        let item = try JSONDecoder().decode(WritingItem.self, from: json)
+
+        #expect(item.id == "w-3")
+        #expect(item.isAnky == true)
+        #expect(item.ankyId == "anky-001")
+        #expect(item.ankyTitle == "Ashes That Remember")
+        #expect(item.response == "Anky reflection text")
+        #expect(item.ankyImagePath == "https://anky.app/data/images/anky-001.png")
+    }
+
+    @Test("GeneratedAnkyListResponse decodes public gallery payload")
+    func generatedAnkyListDecodes() throws {
+        let json = """
+        {
+            "ankys": [
+                {
+                    "created_at": "2026-04-07 13:25:57",
+                    "id": "a2964385-9436-4261-8cda-34b840503697",
+                    "image_path": "https://storage.anky.app/stories/a2964385-9436-4261-8cda-34b840503697/page-0.webp",
+                    "image_webp": "/data/images/a2964385-9436-4261-8cda-34b840503697.webp",
+                    "origin": "generated",
+                    "status": "complete",
+                    "thinker_name": null,
+                    "title": "time as a frontier, not a resource"
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let response = try decoder.decode(GeneratedAnkyListResponse.self, from: json)
+
+        #expect(response.ankys.count == 1)
+        #expect(response.ankys[0].id == "a2964385-9436-4261-8cda-34b840503697")
+        #expect(response.ankys[0].origin == "generated")
+        #expect(response.ankys[0].status == "complete")
+        #expect(response.ankys[0].displayTitle == "time as a frontier, not a resource")
+        #expect(response.ankys[0].remoteImageURL?.absoluteString == "https://storage.anky.app/stories/a2964385-9436-4261-8cda-34b840503697/page-0.webp")
+    }
+
+    @Test("GeneratedAnky normalizes bare image_webp filenames")
+    func generatedAnkyNormalizesBareWebpFilename() {
+        let anky = GeneratedAnky(
+            id: "generated-1",
+            createdAt: "2026-04-07 13:25:57",
+            title: "the mirror that demands you",
+            status: "complete",
+            origin: "generated",
+            imagePath: nil,
+            imageUrl: nil,
+            imageWebp: "8e3499f2-e7ef-44a4-bf12-8a829ed0ac18.webp",
+            imagePrompt: "anky staring into the void",
+            reflection: nil,
+            thinkerName: nil
+        )
+
+        #expect(anky.remoteImageURL?.absoluteString == "https://anky.app/data/images/8e3499f2-e7ef-44a4-bf12-8a829ed0ac18.webp")
+    }
 }
 
 // MARK: - Voice Recording Models
@@ -408,6 +512,55 @@ struct WritingCacheModelTests {
         #expect(entry.prompt == "")
         #expect(entry.isAnky == false)
         #expect(entry.syncState == .synced)
+    }
+
+    @Test("CachedWritingEntry ignores backend anky flag for short sessions")
+    func shortRemoteWriteDoesNotBecomeAnky() {
+        let item = WritingItem(
+            id: "w-short",
+            content: Array(repeating: "word", count: 80).joined(separator: " "),
+            durationSeconds: 120,
+            wordCount: 80,
+            isAnky: true,
+            response: "short reflection",
+            ankyId: "anky-short",
+            ankyTitle: "Too Soon",
+            ankyImagePath: nil,
+            createdAt: "2026-03-20T10:00:00Z"
+        )
+
+        let entry = CachedWritingEntry(item: item)
+
+        #expect(entry.isAnky == false)
+    }
+
+    @Test("Remote merge preserves fresh local synced entry until history catches up")
+    func mergeRemotePreservesFreshLocalSyncedEntry() {
+        let localEntry = CachedWritingEntry(
+            id: "local-session-1",
+            prompt: "",
+            content: Array(repeating: "word", count: 320).joined(separator: " "),
+            durationSeconds: 500,
+            wordCount: 320,
+            isAnky: true,
+            response: "local reflection",
+            ankyId: "anky-local-1",
+            ankyTitle: "An anky was born.",
+            ankyImagePath: "/images/local.png",
+            createdAt: Date(timeIntervalSince1970: 1_763_157_600),
+            flowScore: 0.82,
+            syncState: .synced
+        )
+
+        let merged = WritingCacheStore.mergedEntries(
+            remoteItems: [],
+            existingEntries: [localEntry]
+        )
+
+        #expect(merged.count == 1)
+        #expect(merged.first?.id == localEntry.id)
+        #expect(merged.first?.response == "local reflection")
+        #expect(merged.first?.ankyImagePath == "/images/local.png")
     }
 
     @Test("Sync states encode and decode correctly")

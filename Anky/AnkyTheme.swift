@@ -111,24 +111,37 @@ enum Kingdom: Int, CaseIterable, Codable {
         return Kingdom(rawValue: index) ?? .primordia
     }
 
-    /// Fixed Ankyverse epoch: April 6, 2026 12:00 UTC
+    /// Fixed Ankyverse epoch for sojourn 9: April 6, 2026 12:00 UTC
     static let ankyverseEpoch: TimeInterval = 1775476800
 
-    /// Total cycle: 96 days = 12 waves × 8 days
+    /// Sojourn number at epoch
+    static let ankyverseEpochSojourn = 9
+
+    /// Total cycle per sojourn: 96 days = 12 waves × 8 days
     static let ankyverseTotalDays = 96
     static let ankyverseWaveCount = 12
     static let ankyverseDaysPerWave = 8
 
-    /// Current ankyverse day number (0-based). Returns nil if before epoch.
-    static func ankyverseDayNumber(for date: Date = .now) -> Int? {
+    /// Days elapsed since epoch (can exceed 96 for multi-sojourn). Returns nil if before epoch.
+    static func ankyverseDaysSinceEpoch(for date: Date = .now) -> Int? {
         let elapsed = date.timeIntervalSince1970 - ankyverseEpoch
         guard elapsed >= 0 else { return nil }
-        let day = Int(elapsed / 86400)
-        guard day < ankyverseTotalDays else { return nil }
-        return day
+        return Int(elapsed / 86400)
     }
 
-    /// Current wave number (0-based, 0-11)
+    /// Current sojourn number (9 = first sojourn at epoch)
+    static func ankyverseSojourn(for date: Date = .now) -> Int? {
+        guard let totalDays = ankyverseDaysSinceEpoch(for: date) else { return nil }
+        return ankyverseEpochSojourn + (totalDays / ankyverseTotalDays)
+    }
+
+    /// Day within current sojourn (0-95)
+    static func ankyverseDayNumber(for date: Date = .now) -> Int? {
+        guard let totalDays = ankyverseDaysSinceEpoch(for: date) else { return nil }
+        return totalDays % ankyverseTotalDays
+    }
+
+    /// Current wave number within sojourn (0-based, 0-11)
     static func ankyverseWave(for date: Date = .now) -> Int? {
         guard let day = ankyverseDayNumber(for: date) else { return nil }
         return day / ankyverseDaysPerWave
@@ -149,6 +162,14 @@ enum Kingdom: Int, CaseIterable, Codable {
         let dayOfYear = max((calendar.ordinality(of: .day, in: .year, for: date) ?? 1) - 1, 0)
         let index = dayOfYear % allCases.count
         return allCases[index]
+    }
+
+    /// Formatted ankyverse time string: "sojourn 9 · day 1 · primordia"
+    static func ankyverseTimeLabel(for date: Date = .now) -> String {
+        let sojourn = ankyverseSojourn(for: date) ?? ankyverseEpochSojourn
+        let day = (ankyverseDayNumber(for: date) ?? 0) + 1 // 1-based for display
+        let kingdom = ankyverseDay(for: date)
+        return "sojourn \(sojourn) · day \(day) · \(kingdom.name.lowercased())"
     }
 }
 
@@ -225,24 +246,65 @@ extension Font {
         .custom("Righteous-Regular", size: size)
     }
 
-    /// Thin body text — weight 300, spacious
     static func ankyBody(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .light)
+        .custom("Righteous-Regular", size: size)
     }
 
-    /// Label text — weight 400-500
     static func ankyLabel(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight)
+        .custom("Righteous-Regular", size: size)
     }
 
-    /// Monospace for timers and stats
     static func ankyMono(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .light, design: .monospaced)
+        .custom("Righteous-Regular", size: size)
     }
 
-    /// Display type — large numbers
     static func ankyDisplay(_ size: CGFloat) -> Font {
-        .system(size: size, weight: .light)
+        .custom("Righteous-Regular", size: size)
+    }
+}
+
+extension Kingdom {
+    var sealingDisplayName: String {
+        switch self {
+        case .eleutheria:
+            return "Eleasis"
+        default:
+            return name
+        }
+    }
+
+    var sealingSlug: String {
+        sealingDisplayName.lowercased()
+    }
+
+    var sealingColorHex: String {
+        switch self {
+        case .primordia: return "dc2626"
+        case .emblazion: return "ea580c"
+        case .chryseos: return "ca8a04"
+        case .eleutheria: return "16a34a"
+        case .voxlumis: return "2563eb"
+        case .insightia: return "4f46e5"
+        case .claridium: return "7c3aed"
+        case .poiesis: return "b45309"
+        }
+    }
+
+    var sealingColor: Color {
+        Color(hex: sealingColorHex)
+    }
+
+    var sealingElement: String {
+        switch self {
+        case .primordia: return "Earth"
+        case .emblazion: return "Water"
+        case .chryseos: return "Fire"
+        case .eleutheria: return "Air"
+        case .voxlumis: return "Ether"
+        case .insightia: return "Light"
+        case .claridium: return "Consciousness"
+        case .poiesis: return "Void"
+        }
     }
 }
 
@@ -251,6 +313,14 @@ extension Font {
 extension Color {
     // Primary
     static let ankyVoid = Color(hex: "07070d")
+    static let ankyBg = Color(hex: "08080e")
+    static let ankyCardBg = Color(hex: "14141f")
+    static let ankyBorder = Color(hex: "1c1c2a")
+    static let ankyTextPrimary = Color(hex: "eeeeee")
+    static let ankyTextSecondary = Color(hex: "666666")
+    static let ankyTextMuted = Color(hex: "3a3a3a")
+    static let ankyTextDim = Color(hex: "2a2a2a")
+    static let ankyDivider = Color.white.opacity(0.024)
 
     // Legacy aliases (keep for compatibility with non-redesigned code)
     static let ankyBlack = Color(hex: "07070d")

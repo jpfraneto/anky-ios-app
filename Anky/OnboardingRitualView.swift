@@ -528,39 +528,36 @@ private struct WritingPhaseView: View {
         return model.sessionElapsed.truncatingRemainder(dividingBy: cadence)
     }
 
+    /// Map WritingFlowModel progress to 0-1
+    private var sessionProgress: Double {
+        min(max(model.sessionElapsed / 480, 0), 1)
+    }
+
+    private var idleProgress: Double {
+        if model.phase == .paused { return 1 }
+        return min(max(model.idleElapsed / 8, 0), 1)
+    }
+
+    private var idleBarVisible: Bool {
+        model.phase == .paused || model.idleElapsed >= 3
+    }
+
+    private var progressBarColor: Color {
+        let step = min(Int(sessionProgress * 8), 7)
+        return ChatViewModel.ankyverseColors[step]
+    }
+
+    private var elapsedLabel: String {
+        let total = max(Int(model.sessionElapsed), 0)
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+
     var body: some View {
         ZStack {
-            // Particle system
-            if model.phase == .writing || model.phase == .paused {
-                OnboardingParticleView(
-                    isActive: model.phase == .writing,
-                    keystrokeCount: model.keystrokeDeltas.count,
-                    kingdomColor: kingdom.color,
-                    warmthProgress: warmthProgress
-                )
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
-            }
+            Color.black.ignoresSafeArea()
 
-            // Idle cooling overlay
-            if model.idleElapsed > 5 {
-                let coolingProgress = min((model.idleElapsed - 5) / 3.0, 1.0)
-                Color(hex: "0A0A12")
-                    .opacity(coolingProgress * 0.4)
-                    .ignoresSafeArea()
-                    .allowsHitTesting(false)
-                    .animation(.easeInOut(duration: 0.5), value: coolingProgress)
-            }
-
-            if model.phase == .landing {
-                Color.clear
-                    .onAppear {
-                        model.composerFocused = true
-                        model.beginFocus()
-                    }
-            } else if model.phase == .writing || model.phase == .paused {
-                writingActiveView
-            } else if model.phase == .complete {
+            // Handle completion
+            if model.phase == .complete {
                 Color.clear
                     .onAppear {
                         let capture = model.completedCapture
@@ -569,15 +566,53 @@ private struct WritingPhaseView: View {
                     }
             }
 
-            // Hidden text input
-            AnkyComposerTextView(
-                text: $model.text,
-                isFocused: $model.composerFocused,
-                isVisuallyHidden: true,
-                onUserInput: { model.handleInput($0) }
-            )
-            .frame(width: 1, height: 1)
-            .opacity(0)
+            // Writing UI — same portal experience as main app
+            VStack(spacing: 0) {
+                // 8-second idle bar — only after 3s
+                IdleProgressBar(
+                    progress: idleProgress,
+                    isPaused: model.phase == .paused,
+                    isVisible: idleBarVisible
+                )
+                .padding(.top, 8)
+
+                // Portal canvas — same as main writing view
+                PortalCanvasView(
+                    text: model.text,
+                    sessionProgress: sessionProgress,
+                    wordCount: model.text.split(separator: " ").count
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                // Chakra progress bar
+                ChakraProgressBar(progress: sessionProgress)
+
+                // System keyboard — just write
+                if model.phase == .paused {
+                    SessionPauseChoiceView(
+                        elapsedLabel: elapsedLabel,
+                        hasReachedMilestone: model.qualifiesForAnky,
+                        isWritingSession: true,
+                        canSeal: !model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                        onSeal: { model.submitEarlyIfQualified() },
+                        onKeepWriting: { model.resumeWriting() }
+                    )
+                } else {
+                    TextEditor(text: Binding(
+                        get: { model.text },
+                        set: { model.handleInput($0) }
+                    ))
+                    .font(.custom("Georgia", size: 20))
+                    .lineSpacing(8)
+                    .foregroundStyle(Color.white.opacity(0.9))
+                    .scrollContentBackground(.hidden)
+                    .background(Color.clear)
+                    .frame(minHeight: 80, maxHeight: 160)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 8)
+                }
+            }
+            .opacity(model.phase == .complete ? 0 : 1)
         }
         .onReceive(tick) { now in
             model.tick(at: now)
@@ -585,68 +620,6 @@ private struct WritingPhaseView: View {
         }
     }
 
-    private var writingActiveView: some View {
-        GeometryReader { geometry in
-            let kbHeight = keyboard.height > 0
-                ? keyboard.height - geometry.safeAreaInsets.bottom
-                : 0
-
-            VStack(spacing: 0) {
-                // Top: 8-second idle drain bar
-                IdleDrainBar(
-                    idleElapsed: model.idleElapsed,
-                    idleLimit: 8,
-                    idleWarningStart: 3,
-                    phase: .flow
-                )
-
-                // Center: text stream
-                ScrollViewReader { proxy in
-                    ScrollView(showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Spacer(minLength: 120)
-                            Text(model.text)
-                                .font(.system(size: 18, weight: .regular))
-                                .foregroundStyle(Color(hex: "E8E4DC"))
-                                .lineSpacing(10)
-                                .padding(.horizontal, 28)
-                                .padding(.bottom, 12)
-                                .id("textBottom")
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .onChange(of: model.text) { _ in
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo("textBottom", anchor: .bottom)
-                        }
-                    }
-                }
-                .overlay(alignment: .top) {
-                    LinearGradient(
-                        colors: [Color(hex: "0A0A12").opacity(0.9), Color.clear],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 80)
-                    .allowsHitTesting(false)
-                }
-                .contentShape(Rectangle())
-                .onTapGesture { model.beginFocus() }
-
-                // Bottom: checkpoint glow + countdown/countup timer
-                WritingBottomBar(
-                    sessionElapsed: model.sessionElapsed,
-                    lastCheckpointAge: checkpointAge,
-                    qualifiesForAnky: model.qualifiesForAnky,
-                    onSend: { model.submitEarlyIfQualified() }
-                )
-
-                Color.clear
-                    .frame(height: kbHeight)
-                    .animation(.easeOut(duration: 0.25), value: kbHeight)
-            }
-        }
-    }
 }
 
 // MARK: - Phase 3b: Short Session End

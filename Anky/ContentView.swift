@@ -4,104 +4,63 @@ import UIKit
 
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
-    @EnvironmentObject private var biometricLock: BiometricLockManager
-    @State private var showDebugSheet = false
-    @State private var showRestartConfirm = false
 
     var body: some View {
-        Group {
-            switch appState.route {
-            case .booting:
-                SplashView()
-            case .welcome:
-                OnboardingRitualView()
-            case .recoveryImport:
-                RecoveryImportView()
-            case .locked:
-                OnboardingRitualView()
-            case .unlocked:
-                AnkyChatView()
+        AnkyChatView()
+            .background(Color.black.ignoresSafeArea())
+            .task {
+                await appState.bootstrap()
             }
-        }
-        .background(Color.ankyVoid.ignoresSafeArea())
-        .task {
-            await appState.bootstrap()
-            await DailyPromptNotificationManager.rescheduleIfAuthorized()
-        }
-        .animation(AnkyTheme.transition, value: appState.route)
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 8) {
-                // Always-visible restart button
-                Button {
-                    showRestartConfirm = true
-                } label: {
-                    Text("restart")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.white.opacity(0.5))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            Capsule()
-                                .fill(Color.white.opacity(0.08))
-                        )
-                }
-                .buttonStyle(.plain)
-
-                if appState.route != .booting && appState.route != .welcome {
-                    Button {
-                        showDebugSheet = true
-                    } label: {
-                        Image(systemName: "ladybug")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Color.white.opacity(0.15))
-                            .frame(width: 36, height: 36)
-                            .background(
-                                Circle()
-                                    .fill(Color.white.opacity(0.04))
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.top, 54)
-            .padding(.trailing, 16)
-        }
-        .overlay {
-            if appState.hasCompletedWelcome && biometricLock.requiresUnlockOverlay && appState.route != .booting && appState.route != .welcome {
-                BiometricLockView()
-            }
-        }
-        .sheet(isPresented: $showDebugSheet) {
-            DebugLandingView()
-                .environmentObject(appState)
-                .environmentObject(biometricLock)
-        }
-        .fullScreenCover(item: $appState.qrSealChallenge) { challenge in
-            QRSealAuthView(challenge: challenge)
-                .environmentObject(appState)
-        }
-        .alert("restart fresh", isPresented: $showRestartConfirm) {
-            Button("delete everything", role: .destructive) {
-                Task { await appState.rebootIdentity() }
-            }
-            Button("cancel", role: .cancel) {}
-        } message: {
-            Text("This wipes seed phrase, sessions, and all state. You'll see the mirror from scratch.")
-        }
-        .clipped()
     }
 }
 
 // MARK: - Splash
 
 private struct SplashView: View {
+    @State private var scale: CGFloat = 1.2
+    @State private var opacity: Double = 0
+    @State private var glowRadius: CGFloat = 0
+
+    private var dayKingdom: Kingdom { Kingdom.ankyverseDay() }
+
     var body: some View {
         ZStack {
             Color.ankyVoid
                 .ignoresSafeArea()
 
-            AnkyMark(size: 48)
-                .opacity(0.6)
+            // Kingdom-colored portal glow
+            RadialGradient(
+                colors: [
+                    dayKingdom.color.opacity(0.25),
+                    dayKingdom.color.opacity(0.08),
+                    Color.clear
+                ],
+                center: .center,
+                startRadius: 20,
+                endRadius: 200
+            )
+            .scaleEffect(scale)
+            .opacity(opacity)
+            .ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                AnkyMark(size: 48)
+                    .opacity(0.8)
+                    .shadow(color: dayKingdom.color.opacity(0.4), radius: glowRadius)
+
+                Text(Kingdom.ankyverseTimeLabel())
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(dayKingdom.color.opacity(0.5))
+                    .opacity(opacity)
+            }
+            .scaleEffect(scale)
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.2)) {
+                scale = 1.0
+                opacity = 1.0
+                glowRadius = 20
+            }
         }
     }
 }
@@ -390,11 +349,19 @@ class KeyboardObserver: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
 
     init() {
-        NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)
-            .compactMap { $0.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect }
-            .map(\.height)
+        NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)
+            .merge(with: NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification))
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.height = $0 }
+            .sink { [weak self] note in
+                guard let self,
+                      let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else {
+                    return
+                }
+
+                let screenBounds = UIScreen.main.bounds
+                let overlap = screenBounds.intersection(frame).height
+                self.height = max(overlap, 0)
+            }
             .store(in: &cancellables)
 
         NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)
@@ -413,354 +380,223 @@ struct ActiveWritingSessionView: View {
     @StateObject private var model = WritingFlowModel(prompt: PromptLibrary.currentPrompt())
     @StateObject private var keyboard = KeyboardObserver()
     var onSessionComplete: ((LocalWritingCapture) -> Void)?
-    @State private var showSealAfterComplete = false
 
     private let tick = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
-
-    private var currentPhase: WritingSessionPhase {
-        switch model.phase {
-        case .landing:
-            return .idle
-        case .writing:
-            if model.sessionElapsed < 15 { return .warming }
-            if model.idleElapsed > 0 {
-                let recentDeltas = model.keystrokeDeltas.suffix(10)
-                let avgDelta = recentDeltas.isEmpty ? 2.0 : recentDeltas.reduce(0, +) / Double(recentDeltas.count) / 1000
-                if avgDelta < 2 { return .transcendent }
-            }
-            return .flow
-        case .paused:
-            return .flow
-        case .complete:
-            return .broken
-        }
-    }
+    private let sessionGoal: TimeInterval = 480
 
     var body: some View {
-        ZStack {
-            currentPhase.background.ignoresSafeArea()
-
-            switch model.phase {
-            case .landing:
-                sessionLanding
-            case .writing, .paused:
-                activeSession
-            case .complete:
-                sessionEndStillness
-            }
-
-            // Hidden text view
-            AnkyComposerTextView(
-                text: $model.text,
-                isFocused: $model.composerFocused,
-                isVisuallyHidden: true,
-                onUserInput: { model.handleInput($0) }
-            )
-            .frame(width: 1, height: 1)
-            .opacity(0)
-        }
-        .statusBarHidden(true)
-        .onReceive(tick) { now in model.tick(at: now) }
-        .onAppear {
-            model.updatePrompt(appState.prompt)
-        }
-        .onChange(of: appState.prompt) { newValue in
-            model.updatePrompt(newValue)
-        }
-        .onChange(of: model.phase) { newPhase in
-            appState.activeExperience = (newPhase == .writing || newPhase == .paused) ? .writing : nil
-            appState.hasInProgressWriting = WritingSessionStore.hasDraft()
-            if newPhase == .complete, let capture = model.completedCapture {
-                onSessionComplete?(capture)
-                showSealAfterComplete = false
-                DispatchQueue.main.asyncAfter(deadline: .now() + 8) {
-                    guard model.phase == .complete else { return }
-                    withAnimation(.easeInOut(duration: 0.6)) {
-                        showSealAfterComplete = true
-                    }
-                }
-            }
-        }
-        .task(id: model.pendingCapture) {
-            await model.submitFinishedCapture(appState: appState)
-        }
-        .animation(.easeInOut(duration: 0.6), value: model.phase)
-    }
-
-    // Landing — just shows the prompt, tap to begin
-    private var sessionLanding: some View {
-        VStack {
-            Spacer()
-
-            Text(model.prompt)
-                .font(.ankyBody(19))
-                .foregroundStyle(Color.white)
-                .multilineTextAlignment(.center)
-                .lineSpacing(6)
-                .padding(.horizontal, 36)
-
-            Rectangle()
-                .fill(Color.white.opacity(0.08))
-                .frame(width: 0.5, height: 40)
-                .padding(.top, 24)
-
-            Text("toca para escribir")
-                .font(.ankyBody(13))
-                .foregroundStyle(Color.white.opacity(0.15))
-                .padding(.top, 8)
-
-            Spacer()
-        }
-        .contentShape(Rectangle())
-        .onTapGesture {
-            model.beginFocus()
-        }
-    }
-
-    // Active session — idle drain (top) + textarea (center) + bottom bar
-    private var activeSession: some View {
         GeometryReader { geometry in
             let kbHeight = keyboard.height > 0
                 ? keyboard.height - geometry.safeAreaInsets.bottom
                 : 0
 
-            VStack(spacing: 0) {
-                // Top: 8-second idle drain bar
-                IdleDrainBar(
-                    idleElapsed: model.idleElapsed,
-                    idleLimit: 8,
-                    idleWarningStart: 3,
-                    phase: currentPhase
-                )
-                .padding(.top, geometry.safeAreaInsets.top > 0 ? 0 : 4)
+            ZStack {
+                Color(hex: "0A0A0A").ignoresSafeArea()
 
-                // Center: text stream
-                ScrollViewReader { proxy in
-                    ScrollView(showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            Spacer(minLength: 120)
+                if model.phase == .complete {
+                    postSession
+                } else {
+                    VStack(spacing: 0) {
+                        // Idle bar — 3px, appears after 3s idle
+                        idleBar
 
-                            Text(model.text)
-                                .font(.ankyBody(16))
-                                .foregroundStyle(Color.white.opacity(0.72))
-                                .lineSpacing(10)
-                                .padding(.horizontal, 28)
-                                .padding(.bottom, 12)
-                                .id("textBottom")
+                        // Textarea — fills the screen
+                        AnkyComposerTextView(
+                            text: $model.text,
+                            isFocused: $model.composerFocused,
+                            placeholder: model.prompt,
+                            font: UIFont(name: "Palatino-Roman", size: 18) ?? .systemFont(ofSize: 18),
+                            textInsets: UIEdgeInsets(top: 8, left: 20, bottom: 20, right: 20),
+                            onUserInput: { model.handleInput($0) }
+                        )
+                        .frame(maxHeight: .infinity)
+                        .onTapGesture { model.beginFocus() }
+
+                        // Progress bar + timer
+                        VStack(spacing: 0) {
+                            progressBar
+                            timerLabel
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        // Keyboard spacer
+                        Color.clear
+                            .frame(height: kbHeight)
+                            .animation(.easeOut(duration: 0.25), value: kbHeight)
                     }
-                    .onChange(of: model.text) { _ in
-                        withAnimation(.easeOut(duration: 0.15)) {
-                            proxy.scrollTo("textBottom", anchor: .bottom)
-                        }
-                    }
                 }
-                // Gradient overlay at top (below drain bar)
-                .overlay(alignment: .top) {
-                    LinearGradient(
-                        colors: [currentPhase.background, currentPhase.background.opacity(0)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 80)
-                    .allowsHitTesting(false)
-                }
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    model.beginFocus()
-                }
-
-                // Pause overlay
-                if model.phase == .paused {
-                    HStack {
-                        Spacer()
-                        VStack(spacing: 8) {
-                            Text(WritingExperienceStrings.current[.resumeHint])
-                                .font(.ankyBody(14))
-                                .foregroundStyle(Color.white.opacity(0.6))
-
-                            if model.qualifiesForAnky {
-                                Button {
-                                    model.submitEarlyIfQualified()
-                                } label: {
-                                    Text(WritingExperienceStrings.current[.submitAnkyAction])
-                                        .font(.ankyLabel(13, weight: .medium))
-                                        .foregroundStyle(Color.ankyVoid)
-                                        .padding(.horizontal, 20)
-                                        .frame(height: 36)
-                                        .background(Capsule().fill(Color.white))
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 12)
-                    .background(Color.ankyVoid.opacity(0.6))
-                }
-
-                // Bottom: checkpoint glow + countdown/countup timer
-                WritingBottomBar(
-                    sessionElapsed: model.sessionElapsed,
-                    lastCheckpointAge: checkpointAge,
-                    qualifiesForAnky: model.qualifiesForAnky,
-                    onSend: { model.submitEarlyIfQualified() }
-                )
-
-                // Keyboard spacer
-                Color.clear
-                    .frame(height: kbHeight)
-                    .animation(.easeOut(duration: 0.25), value: kbHeight)
             }
+        }
+        .statusBarHidden(true)
+        .onReceive(tick) { now in model.tick(at: now) }
+        .onAppear {
+            model.updatePrompt(appState.prompt)
+            model.beginFocus()
+        }
+        .onChange(of: appState.prompt) { newValue in
+            model.updatePrompt(newValue)
+        }
+        .onChange(of: model.phase) { newPhase in
+            appState.activeExperience = newPhase == .writing ? .writing : nil
+            appState.hasInProgressWriting = WritingSessionStore.hasDraft()
+            if newPhase == .complete, let capture = model.completedCapture {
+                onSessionComplete?(capture)
+            }
+        }
+        .task(id: model.pendingCapture) {
+            await model.submitFinishedCapture(appState: appState)
         }
     }
 
-    /// How many seconds since the last checkpoint save (for "saved" glow)
-    private var checkpointAge: TimeInterval {
-        // Checkpoints fire every 30 seconds of session elapsed
-        let checkpointCadence: TimeInterval = 30
-        guard model.sessionElapsed > 5 else { return -1 }
-        let sinceLast = model.sessionElapsed.truncatingRemainder(dividingBy: checkpointCadence)
-        // Show glow right after checkpoint (within first 2 seconds of each 30s window)
-        return sinceLast
+    // MARK: - Idle bar (top)
+
+    private var idleBar: some View {
+        GeometryReader { proxy in
+            let idle = model.idleElapsed
+            let visible = model.hasStarted && idle > 3
+            let pct = min(idle / 8, 1)
+            let color: Color = pct > 0.75
+                ? Color(hex: "FF3B30")
+                : pct > 0.5 ? Color(hex: "FF9500") : Color(hex: "FF6B35")
+
+            ZStack(alignment: .leading) {
+                if visible {
+                    Rectangle()
+                        .fill(color.opacity(0.8))
+                        .frame(width: proxy.size.width * pct)
+                        .animation(.linear(duration: 0.1), value: pct)
+                }
+            }
+        }
+        .frame(height: 3)
+        .opacity(model.hasStarted && model.idleElapsed > 3 ? 1 : 0)
+        .animation(.easeOut(duration: 0.4), value: model.idleElapsed > 3)
     }
 
-    // Screen 3 — Session end (stillness → seal)
-    private var sessionEndStillness: some View {
+    // MARK: - Progress bar (bottom)
+
+    private var progressBar: some View {
+        GeometryReader { proxy in
+            let pct = model.hasStarted
+                ? min(model.sessionElapsed / sessionGoal, 1)
+                : 0
+
+            ZStack(alignment: .leading) {
+                Rectangle().fill(Color.white.opacity(0.04))
+
+                Rectangle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                Color(hex: "FF6B35"), Color(hex: "F7C948"),
+                                Color(hex: "2EC4B6"), Color(hex: "3A86FF"),
+                                Color(hex: "8338EC"), Color(hex: "FF006E")
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(width: proxy.size.width * pct)
+                    .animation(.linear(duration: 0.1), value: pct)
+            }
+        }
+        .frame(height: 4)
+        .padding(.horizontal, 20)
+    }
+
+    // MARK: - Timer
+
+    private var timerLabel: some View {
+        let elapsed = model.sessionElapsed
+        let remaining = max(sessionGoal - elapsed, 0)
+        let display = model.hasStarted
+            ? (elapsed < sessionGoal
+                ? formatTime(remaining)
+                : formatTime(elapsed))
+            : "8:00"
+
+        return Text(display)
+            .font(.system(size: 14, design: .monospaced))
+            .foregroundStyle(Color.white.opacity(model.hasStarted ? 0.4 : 0.15))
+            .kerning(1)
+            .padding(.vertical, 10)
+            .padding(.bottom, 6)
+    }
+
+    // MARK: - Post session
+
+    private var postSession: some View {
         VStack(spacing: 0) {
-            Spacer()
-
-            // Duration hero
-            Text(formatDuration(model.sessionElapsed))
-                .font(.ankyDisplay(52))
-                .foregroundStyle(Color.white.opacity(0.85))
-                .kerning(-1)
-
-            Text("minutos escribiendo")
-                .font(.ankyBody(12))
-                .foregroundStyle(Color.white.opacity(0.2))
-                .kerning(1)
-                .padding(.top, 4)
-
-            Spacer().frame(height: 32)
-
-            // Stats row
-            HStack(spacing: 0) {
-                VStack(spacing: 4) {
-                    Text("\(model.wordCount)")
-                        .font(.ankyDisplay(24))
-                        .foregroundStyle(Color.white.opacity(0.7))
-                    Text("palabras")
-                        .font(.ankyBody(11))
-                        .foregroundStyle(Color.white.opacity(0.2))
-                }
-                .frame(maxWidth: .infinity)
-
-                Rectangle().fill(Color.white.opacity(0.06)).frame(width: 0.5, height: 28)
-
-                VStack(spacing: 4) {
-                    Text(formatDuration(model.sessionElapsed))
-                        .font(.ankyDisplay(24))
-                        .foregroundStyle(Color.white.opacity(0.7))
-                    Text("duración")
-                        .font(.ankyBody(11))
-                        .foregroundStyle(Color.white.opacity(0.2))
-                }
-                .frame(maxWidth: .infinity)
+            // Stats header
+            HStack {
+                Text("\(model.wordCount) words")
+                    .font(.ankyBody(14))
+                    .foregroundStyle(Color.white.opacity(0.35))
+                Spacer()
+                Text(formatTime(model.sessionElapsed))
+                    .font(.system(size: 14, design: .monospaced))
+                    .foregroundStyle(Color.white.opacity(0.35))
             }
-            .padding(.horizontal, 28)
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 16)
 
-            Spacer().frame(height: 32)
+            Rectangle().fill(Color.white.opacity(0.06)).frame(height: 0.5).padding(.horizontal, 20)
 
-            // Last line
-            if let lastLine: String = model.text.isEmpty ? nil : String(model.text.suffix(80)) {
-                VStack(spacing: 6) {
-                    Divider().background(Color.white.opacity(0.06))
-
-                    Text(lastLine)
-                        .font(.ankyBody(13))
-                        .italic()
-                        .foregroundStyle(Color.white.opacity(0.3))
-                        .lineLimit(2)
-                        .padding(.vertical, 16)
-
-                    Divider().background(Color.white.opacity(0.06))
-                }
-                .padding(.horizontal, 28)
+            // Raw writing
+            ScrollView(showsIndicators: false) {
+                Text(model.text)
+                    .font(.ankyBody(17))
+                    .foregroundStyle(Color.white.opacity(0.72))
+                    .lineSpacing(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 20)
             }
 
-            // Generation status
-            if model.isSubmitting || model.outcome == nil {
+            // Submission status
+            if model.isSubmitting {
                 HStack(spacing: 8) {
-                    Circle()
-                        .fill(Color(hex: "4a8a4a"))
-                        .frame(width: 6, height: 6)
-                    Text("procesando sesión")
-                        .font(.ankyBody(12))
-                        .foregroundStyle(Color.white.opacity(0.45))
+                    Circle().fill(Color(hex: "FF6B35")).frame(width: 6, height: 6)
+                    Text("anchoring")
+                        .font(.system(size: 10, weight: .medium, design: .monospaced))
+                        .foregroundStyle(Color(hex: "FF6B35"))
+                        .textCase(.uppercase)
+                        .kerning(1)
                 }
-                .padding(.top, 24)
+                .padding(.top, 12)
             }
 
-            Spacer()
+            Spacer().frame(height: 16)
 
-            // Seal appears after 8 seconds of contemplation
-            if showSealAfterComplete, model.completedCapture?.qualifiesForAnky == true {
-                SwipeToSealView(
-                    kingdom: appState.kingdom,
-                    sessionId: model.completedCapture?.sessionId ?? "",
-                    onSealed: {
-                        appState.incrementCompletedSessions()
-                        dismiss()
-                    },
-                    onKeepPrivate: {
-                        dismiss()
-                    }
-                )
-                .padding(.horizontal, 24)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
-
-            // Keep writing button
+            // Actions
             Button {
-                showSealAfterComplete = false
-                resetSession()
+                model.reset(for: appState.prompt)
             } label: {
-                Text("seguir escribiendo")
+                Text("write again")
                     .font(.ankyLabel(14, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.4))
+                    .foregroundStyle(Color.white.opacity(0.5))
                     .frame(maxWidth: .infinity)
-                    .frame(height: 44)
+                    .frame(height: 48)
                     .background(
-                        RoundedRectangle(cornerRadius: 7)
+                        RoundedRectangle(cornerRadius: 8)
                             .fill(Color.white.opacity(0.04))
                     )
             }
             .buttonStyle(.plain)
-            .padding(.horizontal, 28)
+            .padding(.horizontal, 20)
 
-            Button("cerrar") {
-                dismiss()
-            }
-            .font(.ankyBody(13))
-            .foregroundStyle(Color.white.opacity(0.2))
-            .buttonStyle(.plain)
-            .padding(.top, 12)
-            .padding(.bottom, 40)
+            Button("close") { dismiss() }
+                .font(.ankyBody(13))
+                .foregroundStyle(Color.white.opacity(0.2))
+                .buttonStyle(.plain)
+                .padding(.top, 12)
+                .padding(.bottom, 40)
         }
-        .frame(maxWidth: .infinity)
     }
 
-    private func resetSession() {
-        showSealAfterComplete = false
-        model.reset(for: appState.prompt)
-    }
-
-    private func formatDuration(_ seconds: TimeInterval) -> String {
-        let m = Int(seconds) / 60
-        let s = Int(seconds) % 60
-        return String(format: "%d:%02d", m, s)
+    private func formatTime(_ seconds: TimeInterval) -> String {
+        let total = max(Int(seconds), 0)
+        return "\(total / 60):\(String(format: "%02d", total % 60))"
     }
 }
 

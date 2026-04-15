@@ -240,6 +240,8 @@ struct ThreadDetailView: View {
                                     ankyBubble(text: text)
                                 case .user(let text):
                                     userBubble(text: text)
+                                case .ankyImage(let url):
+                                    AnkyImageMessageView(urlString: url, timestamp: msg.timestamp)
                                 }
                             }
 
@@ -253,7 +255,7 @@ struct ThreadDetailView: View {
                         .padding(.top, 16)
                         .padding(.bottom, 80)
                     }
-                    .onChange(of: conversationMessages.count) { _ in
+                    .onChange(of: conversationMessages.count) { _, _ in
                         withAnimation {
                             proxy.scrollTo("bottom")
                         }
@@ -430,6 +432,7 @@ struct ThreadDetailView: View {
                     switch cm.kind {
                     case .user(let t): history.append(ChatHistoryItem(role: "user", content: t))
                     case .anky(let t): history.append(ChatHistoryItem(role: "assistant", content: t))
+                    case .ankyImage: break
                     }
                 }
 

@@ -22,3 +22,16 @@ The goal is not to teach Swift in the abstract. The goal is to teach Swift, Swif
 - `007_quick_chat_followups.md`
 - `008_altar_seal_apple_pay_and_qr_auth.md`
 - `009_altar_first_shell_and_daily_keyboard_chat_loop.md`
+- `010_forward_only_writing_and_daily_archives.md`
+- `011_chat_shell_header_and_native_generate_gallery.md`
+- `012_sealing_screen_and_sse_submit_flow.md`
+- `013_canonical_anky_file_protocol.md`
+- `014_writing_feedback_archive_truth_and_threads.md`
+- `015_seed_backup_sheet_layout.md`
+- `016_chat_scroll_copy_haptics_and_settings_polish.md`
+- `017_profile_v2_real_anky_archive_and_conversation_sheets.md`
+- `018_background_skip_submit_and_pending_archive_truth.md`
+- `019_profile_pending_retry_and_submit_idempotency.md`
+- `020_settings_formalities_and_in_app_safari.md`
+- `021_writer_dismissal_and_first_responder_races.md`
+- `022_settings_connected_devices_and_premium_sheet.md`

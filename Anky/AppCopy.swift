@@ -8,7 +8,7 @@ import Foundation
 enum AppCopyKey: String {
     case welcomeIntroBody
     case welcomeBiometryBody
-    case welcomeKeychainBody
+    case welcomeKeychainBody 
     case welcomeNotificationsBody
     case welcomeContinueAction
     case welcomeEnableBiometryAction

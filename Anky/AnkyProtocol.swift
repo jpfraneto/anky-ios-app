@@ -69,10 +69,14 @@ enum AnkyProtocol {
 
     // Keychain keys
     private static let encryptionPrivateKeyKey = "anky.encryption.x25519-private"
+    private static let migrationDoneKey = "anky.encryption.icloud-migrated"
 
     // Anky's enclave public key (X25519, base64)
-    // Retrieved from GET /api/anky/public-key or hardcoded as fallback
-    private static let hardcodedAnkyPublicKeyBase64 = "mbuydCxEAulK+qRSrs23V87hbzemvI7MNPo6JwBRHls="
+    // Fetched dynamically from GET /api/anky/public-key; hardcoded value is fallback only
+    private static let hardcodedAnkyPublicKeyBase64 = "NPx+MwUCYs1WlZ4RcJwsEoMsVY0kHdcQnUGKmsBU1jg="
+
+    // Dynamically fetched enclave public key (takes precedence over hardcoded)
+    private static var cachedEnclavePublicKeyBase64: String?
 
     // HKDF shared info for ECIES key wrapping
     private static let eciesSharedInfo = "anky-session-key-encryption"
@@ -80,8 +84,12 @@ enum AnkyProtocol {
     // MARK: - Keypair Management
 
     /// Ensures a user X25519 keypair exists. Creates one on first call.
+    /// The key is stored in iCloud Keychain so it survives device loss and syncs across devices.
     @discardableResult
     static func ensureKeypair() throws -> Curve25519.KeyAgreement.PublicKey {
+        // Migrate any existing device-only key to iCloud Keychain
+        migrateToICloudKeychainIfNeeded()
+
         if let existingKey = loadPrivateKey() {
             return existingKey.publicKey
         }
@@ -89,11 +97,40 @@ enum AnkyProtocol {
         guard KeychainHelper.set(
             Data(privateKey.rawRepresentation),
             for: encryptionPrivateKeyKey,
-            synchronizable: false
+            synchronizable: true
         ) else {
             throw AnkyProtocolError.keychainStoreFailed
         }
         return privateKey.publicKey
+    }
+
+    /// One-time migration: promotes a device-only key to iCloud Keychain.
+    private static func migrateToICloudKeychainIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: migrationDoneKey) else { return }
+        defer { UserDefaults.standard.set(true, forKey: migrationDoneKey) }
+
+        // Check for existing device-only key
+        guard let localData = KeychainHelper.getData(encryptionPrivateKeyKey, synchronizable: false) else {
+            return // No local key — fresh install, nothing to migrate
+        }
+
+        // Write to iCloud Keychain
+        guard KeychainHelper.set(localData, for: encryptionPrivateKeyKey, synchronizable: true) else {
+            print("[AnkyProtocol] iCloud Keychain migration failed — keeping device-only key")
+            return
+        }
+
+        // Remove the old device-only entry
+        // (delete uses kSecAttrSynchronizableAny so we need a targeted delete)
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: Bundle.main.bundleIdentifier ?? "com.jpfraneto.Anky",
+            kSecAttrAccount as String: encryptionPrivateKeyKey,
+            kSecAttrSynchronizable as String: false
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        print("[AnkyProtocol] Migrated encryption key to iCloud Keychain")
     }
 
     /// Returns the user's X25519 public key (base64).
@@ -283,7 +320,7 @@ enum AnkyProtocol {
     // MARK: - Key Loading
 
     private static func loadPrivateKey() -> Curve25519.KeyAgreement.PrivateKey? {
-        guard let data = KeychainHelper.getData(encryptionPrivateKeyKey, synchronizable: false) else {
+        guard let data = KeychainHelper.getData(encryptionPrivateKeyKey, synchronizable: true) else {
             return nil
         }
         return try? Curve25519.KeyAgreement.PrivateKey(rawRepresentation: data)
@@ -303,6 +340,105 @@ enum AnkyProtocol {
 
     private static func loadAnkyPublicKey() throws -> Curve25519.KeyAgreement.PublicKey {
         guard let data = Data(base64Encoded: hardcodedAnkyPublicKeyBase64), data.count == 32 else {
+            throw AnkyProtocolError.invalidPublicKey
+        }
+        return try Curve25519.KeyAgreement.PublicKey(rawRepresentation: data)
+    }
+
+    // MARK: - Relay Encryption (ECIES: ephemeral X25519 + AES-256-GCM)
+
+    /// Encrypts a session string for the relay endpoint.
+    /// Scheme: ephemeral X25519 → HKDF-SHA256(sharedSecret, salt="", info="anky-relay") → AES-256-GCM.
+    /// Returns all components needed for the relay payload.
+    static func relayEncrypt(plaintext: String) throws -> (ephemeralPublicKey: Data, nonce: Data, tag: Data, ciphertext: Data) {
+        let enclavePublicKey = try loadAnkyPublicKey()
+        let ephemeral = Curve25519.KeyAgreement.PrivateKey()
+
+        let sharedSecret = try ephemeral.sharedSecretFromKeyAgreement(with: enclavePublicKey)
+
+        let aesKey = sharedSecret.hkdfDerivedSymmetricKey(
+            using: SHA256.self,
+            salt: Data(),
+            sharedInfo: Data("anky-relay".utf8),
+            outputByteCount: 32
+        )
+
+        let nonce = AES.GCM.Nonce()
+        let sealed = try AES.GCM.seal(Data(plaintext.utf8), using: aesKey, nonce: nonce)
+
+        return (
+            ephemeralPublicKey: Data(ephemeral.publicKey.rawRepresentation),
+            nonce: Data(nonce),
+            tag: Data(sealed.tag),
+            ciphertext: sealed.ciphertext
+        )
+    }
+
+    // MARK: - Sealed Write Encryption
+
+    /// Sets the dynamically fetched enclave public key. Call after fetching from /api/anky/public-key.
+    static func setEnclavePublicKey(_ base64Key: String) {
+        cachedEnclavePublicKeyBase64 = base64Key
+    }
+
+    /// Encrypts a writing session for the new POST /api/sealed-write endpoint.
+    /// Scheme: ephemeral X25519 → ECDH → SHA256(shared_secret) → AES-256-GCM.
+    /// sessionHash = hex(SHA256(plaintext_writing)).
+    /// The ephemeral private key is discarded after use.
+    static func sealForWrite(
+        content: String,
+        sessionId: String,
+        duration: Double,
+        wordCount: Int
+    ) throws -> SealedWriteRequest {
+        let plaintext = Data(content.utf8)
+
+        // 1. Load enclave public key (prefer dynamically fetched, fall back to hardcoded)
+        let enclavePublicKey = try loadEnclavePublicKeyForSealedWrite()
+
+        // 2. Generate ephemeral X25519 keypair
+        let ephemeral = Curve25519.KeyAgreement.PrivateKey()
+
+        // 3. ECDH: shared_secret = ephemeral_private × enclave_public
+        let sharedSecret = try ephemeral.sharedSecretFromKeyAgreement(with: enclavePublicKey)
+
+        // 4. Derive AES key: aes_key = SHA256(shared_secret)
+        let sharedSecretData = sharedSecret.withUnsafeBytes { Data($0) }
+        let aesKeyHash = SHA256.hash(data: sharedSecretData)
+        let aesKey = SymmetricKey(data: Data(aesKeyHash))
+
+        // 5. Generate random 12-byte nonce
+        let nonce = AES.GCM.Nonce()
+
+        // 6. Encrypt: AES-256-GCM(aes_key, nonce, plaintext) → (ciphertext, tag)
+        let sealed = try AES.GCM.seal(plaintext, using: aesKey, nonce: nonce)
+
+        // 7. sessionHash = hex(SHA256(plaintext_writing))
+        let plaintextHash = SHA256.hash(data: plaintext)
+        let sessionHash = plaintextHash.compactMap { String(format: "%02x", $0) }.joined()
+
+        // 8. User's public key for optional re-read capability
+        let userPubKeyBase64 = try? userPublicKeyBase64()
+
+        // Ephemeral private key goes out of scope and is discarded here
+        return SealedWriteRequest(
+            sessionId: sessionId,
+            ciphertext: sealed.ciphertext.base64EncodedString(),
+            nonce: Data(nonce).base64EncodedString(),
+            tag: Data(sealed.tag).base64EncodedString(),
+            ephemeralPublicKey: Data(ephemeral.publicKey.rawRepresentation).base64EncodedString(),
+            sessionHash: sessionHash,
+            duration: duration,
+            wordCount: wordCount,
+            userEncryptedKey: userPubKeyBase64
+        )
+    }
+
+    /// Loads the enclave public key for sealed-write encryption.
+    /// Prefers dynamically fetched key; falls back to hardcoded.
+    private static func loadEnclavePublicKeyForSealedWrite() throws -> Curve25519.KeyAgreement.PublicKey {
+        let base64 = cachedEnclavePublicKeyBase64 ?? hardcodedAnkyPublicKeyBase64
+        guard let data = Data(base64Encoded: base64), data.count == 32 else {
             throw AnkyProtocolError.invalidPublicKey
         }
         return try Curve25519.KeyAgreement.PublicKey(rawRepresentation: data)

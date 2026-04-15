@@ -3,7 +3,17 @@
 //  Anky
 //
 
+import CryptoKit
 import Foundation
+
+struct AnkySubmitStreamFailure: LocalizedError, Equatable {
+    let stage: String
+    let retryable: Bool
+
+    var errorDescription: String? {
+        "Anky submit failed during \(stage)."
+    }
+}
 
 final class AnkyAPI {
     static let shared = AnkyAPI()
@@ -13,6 +23,12 @@ final class AnkyAPI {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
+    private static let submitDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter
+    }()
 
     init(
         baseURL: URL = URL(string: "https://anky.app/swift/v2")!,
@@ -73,12 +89,180 @@ final class AnkyAPI {
         try await delete("/auth/session")
     }
 
+    func connectedDevices() async throws -> [ConnectedDevice] {
+        let response: ConnectedDevicesResponse = try await get("/auth/sessions")
+        return response.items
+    }
+
+    func revokeConnectedDevice(id: String) async throws {
+        let encodedID = id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? id
+        let _: EmptyResponse = try await delete("/auth/sessions/\(encodedID)")
+    }
+
     func writings() async throws -> [WritingItem] {
         try await get("/writings")
     }
 
     func submitWriting(_ request: MobileWriteRequest) async throws -> MobileWriteResponse {
         try await post("/write", body: request)
+    }
+
+    func submitWriting(_ capture: LocalWritingCapture, kingdom: Kingdom) async throws -> MobileWriteResponse {
+        let result = try await submitAnkyCaptureUntilStored(capture, kingdom: kingdom)
+        return MobileWriteResponse(
+            ok: true,
+            sessionId: capture.sessionId,
+            outcome: "anky",
+            wordCount: capture.wordCount,
+            durationSeconds: capture.duration,
+            flowScore: capture.estimatedFlowScore,
+            persisted: true,
+            spawned: SpawnedArtifacts(
+                ankyId: result.ankyId,
+                feedback: nil,
+                meditation: nil,
+                breathwork: nil,
+                cuentacuentos: nil
+            ),
+            walletAddress: nil,
+            statusUrl: nil,
+            ankyResponse: result.reflection.isEmpty ? nil : result.reflection,
+            nextPrompt: nil,
+            mood: nil,
+            error: nil
+        )
+    }
+
+    func submitAnkyCaptureUntilStored(
+        _ capture: LocalWritingCapture,
+        kingdom: Kingdom
+    ) async throws -> AnkySubmitStreamResult {
+        var result = AnkySubmitStreamResult()
+
+        for try await event in streamAnkySubmit(capture: capture, kingdom: kingdom) {
+            switch event {
+            case .accepted(let ankyId):
+                result.ankyId = ankyId
+            case .title(let title):
+                result.title = title
+            case .reflectionChunk(let chunk):
+                result.reflection += chunk
+            case .reflectionComplete(let reflection):
+                result.reflection = reflection
+            case .imageURL(let imageURL):
+                result.imageURL = imageURL
+            case .solana(let signature):
+                result.solanaSignature = signature
+            case .done(let ankyId):
+                result.ankyId = result.ankyId ?? ankyId
+                result.didReachDone = true
+                return result
+            case .error(let stage, let retryable):
+                if (stage == "solana" || stage == "image"), result.ankyId != nil {
+                    return result
+                }
+                throw AnkySubmitStreamFailure(stage: stage, retryable: retryable)
+            }
+        }
+
+        if result.ankyId != nil {
+            return result
+        }
+
+        throw AnkyError.transport("The submit stream ended before the session was stored.")
+    }
+
+    func streamAnkySubmit(
+        capture: LocalWritingCapture,
+        kingdom: Kingdom
+    ) -> AsyncThrowingStream<AnkySubmitStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let submitRequest = try self.makeAnkySubmitRequest(capture: capture, kingdom: kingdom)
+                    let url = try self.resolveURL(for: "/api/anky/submit", relativeTo: self.webBaseURL)
+
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "POST"
+                    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    request.setValue(submitRequest.sessionHash, forHTTPHeaderField: "Idempotency-Key")
+                    request.setValue(submitRequest.sessionHash, forHTTPHeaderField: "X-Anky-Session-Hash")
+
+                    guard let token = self.sessionToken, !token.isEmpty else {
+                        throw AnkyError.missingSession
+                    }
+                    request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    request.httpBody = try self.encoder.encode(submitRequest)
+
+                    let (bytes, response) = try await self.session.bytes(for: request)
+
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        throw AnkyError.invalidResponse
+                    }
+
+                    if httpResponse.statusCode == 401 {
+                        KeychainHelper.delete(AppState.sessionTokenKey)
+                        throw AnkyError.unauthorized
+                    }
+
+                    if httpResponse.statusCode >= 400 {
+                        var data = Data()
+                        for try await byte in bytes {
+                            data.append(byte)
+                        }
+                        let errorMessage = (try? self.decoder.decode(ErrorResponse.self, from: data))?.error
+                            ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+                        throw AnkyError.api(errorMessage)
+                    }
+
+                    var currentEvent: String?
+                    var currentDataLines: [String] = []
+
+                    func emitCurrentEvent() throws {
+                        guard let currentEvent else { return }
+                        let rawData = currentDataLines.joined(separator: "\n")
+                        guard let event = try Self.parseAnkySubmitEvent(named: currentEvent, rawData: rawData) else {
+                            return
+                        }
+                        continuation.yield(event)
+                    }
+
+                    for try await line in bytes.lines {
+                        if Task.isCancelled {
+                            break
+                        }
+
+                        if line.isEmpty {
+                            try emitCurrentEvent()
+                            currentEvent = nil
+                            currentDataLines = []
+                            continue
+                        }
+
+                        if line.hasPrefix("event:") {
+                            currentEvent = String(line.dropFirst("event:".count)).trimmingCharacters(in: .whitespaces)
+                            continue
+                        }
+
+                        if line.hasPrefix("data:") {
+                            currentDataLines.append(
+                                String(line.dropFirst("data:".count)).trimmingCharacters(in: .whitespaces)
+                            )
+                        }
+                    }
+
+                    try emitCurrentEvent()
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
     }
 
     func chatQuick(writing: String, message: String, history: [ChatHistoryItem]) async throws -> String {
@@ -92,12 +276,47 @@ final class AnkyAPI {
         return response.response
     }
 
+    func continueAnkyConversation(ankyId: String, text: String) async throws -> AnkyConversationResponse {
+        try await post(
+            "/api/anky/\(ankyId)/conversation",
+            body: AnkyConversationRequest(text: text),
+            baseURLOverride: webBaseURL
+        )
+    }
+
     func getWritingStatus(sessionId: String) async throws -> WritingStatusResponse {
         try await get("/writing/\(sessionId)/status")
     }
 
     func getPrompt(id: String) async throws -> PromptResponse {
         try await get("/prompt/\(id)", requiresAuth: false)
+    }
+
+    func generateAnky(writing: String, aspectRatio: String = "1:1") async throws -> GenerateAnkyResponse {
+        try await post(
+            "/api/v1/generate",
+            body: GenerateAnkyRequest(model: "flux", writing: writing, aspectRatio: aspectRatio),
+            requiresAuth: false,
+            baseURLOverride: webBaseURL
+        )
+    }
+
+    func getGeneratedAnky(id: String) async throws -> GeneratedAnky {
+        try await get("/api/v1/anky/\(id)", requiresAuth: false, baseURLOverride: webBaseURL)
+    }
+
+    func generatedAnkyGallery(origin: String = "generated") async throws -> [GeneratedAnky] {
+        let encodedOrigin = origin.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? origin
+        let response: GeneratedAnkyListResponse = try await get(
+            "/api/ankys?origin=\(encodedOrigin)",
+            requiresAuth: false,
+            baseURLOverride: webBaseURL
+        )
+        return response.ankys
+    }
+
+    func myGeneratedAnkys() async throws -> [GeneratedAnky] {
+        try await get("/api/my-ankys", baseURLOverride: webBaseURL)
     }
 
     func altar() async throws -> AltarState {
@@ -313,10 +532,77 @@ final class AnkyAPI {
         )
     }
 
+    // MARK: - Relay (.anky session protocol)
+
+    func relaySession(_ request: RelayRequest) async throws -> RelayResponse {
+        try await post("/api/v1/relay", body: request, requiresAuth: false, baseURLOverride: webBaseURL)
+    }
+
     // MARK: - Sealed Sessions
 
     func sealSession(_ sealed: SealedSession) async throws -> SealSessionResponse {
         try await post("/api/sessions/seal", body: sealed, baseURLOverride: webBaseURL)
+    }
+
+    // MARK: - Sealed Write (enclave endpoint, replaces plaintext for authenticated users)
+
+    /// Fetch the enclave X25519 public key dynamically.
+    func fetchEnclavePublicKey() async throws -> String {
+        let response: EnclavePublicKeyResponse = try await get(
+            "/api/anky/public-key",
+            requiresAuth: false,
+            baseURLOverride: webBaseURL
+        )
+        return response.encryptionPublicKey
+    }
+
+    /// Submit an encrypted writing session to the sealed-write endpoint.
+    /// Uses a camelCase encoder since this endpoint expects camelCase JSON keys.
+    func submitSealedWrite(_ request: SealedWriteRequest) async throws -> SealedWriteResponse {
+        let camelEncoder = JSONEncoder()
+        let bodyData = try camelEncoder.encode(request)
+
+        let url = try resolveURL(for: "api/sealed-write", relativeTo: webBaseURL)
+
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "POST"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        guard let token = sessionToken, !token.isEmpty else {
+            throw AnkyError.missingSession
+        }
+        urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        urlRequest.httpBody = bodyData
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: urlRequest)
+        } catch {
+            throw mapTransportError(error)
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw AnkyError.invalidResponse
+        }
+
+        if httpResponse.statusCode == 401 {
+            KeychainHelper.delete(AppState.sessionTokenKey)
+            throw AnkyError.unauthorized
+        }
+
+        if httpResponse.statusCode >= 400 {
+            let errorMessage = (try? decoder.decode(ErrorResponse.self, from: data))?.error
+                ?? HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode)
+            throw AnkyError.api(errorMessage)
+        }
+
+        do {
+            return try decoder.decode(SealedWriteResponse.self, from: data)
+        } catch {
+            throw AnkyError.transport("Unable to decode the server response.")
+        }
     }
 
     // MARK: - Mirror (Solana cNFT, backend-driven)
@@ -487,6 +773,148 @@ final class AnkyAPI {
 
         return "\(path)?childId=\(encodedChildID)"
     }
+
+    private func makeAnkySubmitRequest(
+        capture: LocalWritingCapture,
+        kingdom: Kingdom
+    ) throws -> AnkySubmitRequest {
+        let sessionData: Data
+        if let ankyFilePath = capture.ankyFilePath, !ankyFilePath.isEmpty {
+            sessionData = try Data(contentsOf: URL(fileURLWithPath: ankyFilePath))
+        } else if let session = capture.ankySessionString, !session.isEmpty {
+            sessionData = Data(session.utf8)
+        } else {
+            throw AnkyError.transport("The writing session payload is missing.")
+        }
+
+        guard let session = String(data: sessionData, encoding: .utf8), !session.isEmpty else {
+            throw AnkyError.transport("The writing session payload was not valid UTF-8.")
+        }
+
+        let sessionHash: String
+        if let existingHash = capture.sessionHash, !existingHash.isEmpty {
+            sessionHash = existingHash
+        } else {
+            sessionHash = AnkySessionFileStore.sha256Hex(of: sessionData)
+        }
+
+        let messageData = Data(hexString: sessionHash) ?? Data(sessionHash.utf8)
+        let signature = try SeedIdentityManager.shared.sign(message: messageData)
+        _ = try SeedIdentityManager.shared.solanaAddress()
+        let startedAt = AnkySessionFileStore.firstKeystrokeDate(from: session) ?? capture.finishedAt.addingTimeInterval(-capture.duration)
+
+        return AnkySubmitRequest(
+            sessionHash: sessionHash,
+            durationSeconds: max(Int(capture.duration.rounded()), 0),
+            wordCount: capture.wordCount,
+            kingdom: kingdom.sealingSlug,
+            startedAt: Self.submitDateFormatter.string(from: startedAt),
+            walletSignature: Base58.encode(signature),
+            session: session
+        )
+    }
+
+    private nonisolated static func parseAnkySubmitEvent(
+        named eventName: String,
+        rawData: String
+    ) throws -> AnkySubmitStreamEvent? {
+        let normalizedName = eventName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedName.isEmpty else { return nil }
+
+        let data = Data(rawData.utf8)
+        let object = try JSONSerialization.jsonObject(with: data)
+        guard let payload = object as? [String: Any] else {
+            throw AnkyError.transport("The submit stream payload was malformed.")
+        }
+
+        switch normalizedName {
+        case "accepted":
+            guard let ankyId = payload["anky_id"] as? String else {
+                throw AnkyError.transport("The accepted event was missing an anky_id.")
+            }
+            return .accepted(ankyId: ankyId)
+        case "title":
+            guard let title = payload["title"] as? String else {
+                throw AnkyError.transport("The title event was missing a title.")
+            }
+            return .title(title)
+        case "reflection_chunk":
+            guard let text = payload["text"] as? String else {
+                throw AnkyError.transport("The reflection chunk event was missing text.")
+            }
+            return .reflectionChunk(text)
+        case "reflection_complete":
+            guard let reflection = payload["reflection"] as? String else {
+                throw AnkyError.transport("The reflection complete event was missing reflection text.")
+            }
+            return .reflectionComplete(reflection)
+        case "image_url":
+            guard let imageURL = payload["image_url"] as? String else {
+                throw AnkyError.transport("The image event was missing an image_url.")
+            }
+            return .imageURL(imageURL)
+        case "solana":
+            guard let signature = payload["signature"] as? String else {
+                throw AnkyError.transport("The solana event was missing a signature.")
+            }
+            return .solana(signature: signature)
+        case "done":
+            guard let ankyId = payload["anky_id"] as? String else {
+                throw AnkyError.transport("The done event was missing an anky_id.")
+            }
+            return .done(ankyId: ankyId)
+        case "error":
+            guard let stage = payload["stage"] as? String else {
+                throw AnkyError.transport("The error event was missing a stage.")
+            }
+            let retryable = payload["retryable"] as? Bool ?? false
+            return .error(stage: stage, retryable: retryable)
+        default:
+            return nil
+        }
+    }
+
+    // MARK: - Now Sessions
+
+    func createNow(_ request: CreateNowRequest) async throws -> CreateNowResponse {
+        try await post("/api/v1/now", body: request, baseURLOverride: webBaseURL)
+    }
+
+    func getNowRoom(slug: String) async throws -> NowRoom {
+        try await get("/api/v1/now/\(slug)", requiresAuth: false, baseURLOverride: webBaseURL)
+    }
+
+    func joinNow(slug: String) async throws -> NowJoinResponse {
+        try await post("/api/v1/now/\(slug)/join", body: EmptyRequest(), baseURLOverride: webBaseURL)
+    }
+
+    func startNow(slug: String) async throws -> NowStartResponse {
+        try await post("/api/v1/now/\(slug)/start", body: EmptyRequest(), baseURLOverride: webBaseURL)
+    }
+
+    func heartbeatNow(slug: String) async throws -> NowHeartbeatResponse {
+        try await post("/api/v1/now/\(slug)/heartbeat", body: EmptyRequest(), baseURLOverride: webBaseURL)
+    }
 }
 
-private struct EmptyRequest: Encodable {}
+struct EmptyRequest: Encodable {}
+
+private extension Data {
+    init?(hexString: String) {
+        let hex = hexString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard hex.count.isMultiple(of: 2) else { return nil }
+
+        var data = Data(capacity: hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let nextIndex = hex.index(index, offsetBy: 2)
+            guard nextIndex <= hex.endIndex,
+                  let byte = UInt8(hex[index..<nextIndex], radix: 16) else {
+                return nil
+            }
+            data.append(byte)
+            index = nextIndex
+        }
+        self = data
+    }
+}

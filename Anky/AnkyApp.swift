@@ -206,6 +206,22 @@ struct AnkyApp: App {
             return
         }
 
+        // Now session: https://anky.app/n/{slug}
+        if components.path.hasPrefix("/n/") {
+            let slug = String(components.path.dropFirst(3))
+            guard !slug.isEmpty else { return }
+            appState.pendingNowSlug = slug
+            return
+        }
+
+        // Shared anky: https://anky.app/anky/{id}
+        if components.path.hasPrefix("/anky/") {
+            let ankyId = String(components.path.dropFirst("/anky/".count))
+            guard !ankyId.isEmpty else { return }
+            appState.presentSharedAnky(id: ankyId)
+            return
+        }
+
         // Write deep link: https://anky.app/write?p=<UUID>
         guard components.path.hasPrefix("/write") else { return }
 

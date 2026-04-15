@@ -23,11 +23,35 @@ struct PersistedMessage: Codable, Identifiable, Equatable {
 enum PersistedMessageKind: Codable, Equatable {
     case anky(text: String)
     case user(text: String)
+    case ankyImage(url: String)
     case writingSession(preview: String, wordCount: Int, flowScore: Int, duration: Double)
+}
+
+struct ChatArchiveDay: Identifiable, Equatable {
+    let dayKey: String
+    let messages: [PersistedMessage]
+
+    var id: String { dayKey }
+
+    var date: Date? {
+        ChatStore.utcDayFormatter.date(from: dayKey)
+    }
+
+    var sessionCount: Int {
+        messages.filter { $0.duration != nil }.count
+    }
 }
 
 final class ChatStore {
     static let shared = ChatStore()
+    private static let lastSessionStartKey = "anky.chat.last-session-start"
+    static let utcDayFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 
     private let fileURL: URL = {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -37,6 +61,58 @@ final class ChatStore {
     private var cache: [PersistedMessage]?
 
     func load() -> [PersistedMessage] {
+        messages(forDayKey: Self.currentUTCKey())
+    }
+
+    func loadArchivedDays(includeCurrentDay: Bool = false) -> [ChatArchiveDay] {
+        let currentDayKey = Self.currentUTCKey()
+        let grouped = Dictionary(grouping: loadAll(), by: { Self.utcDayKey(for: $0.timestamp) })
+
+        return grouped
+            .filter { includeCurrentDay || $0.key != currentDayKey }
+            .map { key, messages in
+                ChatArchiveDay(
+                    dayKey: key,
+                    messages: messages.sorted { $0.timestamp < $1.timestamp }
+                )
+            }
+            .sorted { $0.dayKey > $1.dayKey }
+    }
+
+    func hasAnyHistory() -> Bool {
+        !loadAll().isEmpty
+    }
+
+    func recordSessionStart(at date: Date = .now) {
+        UserDefaults.standard.set(date.timeIntervalSince1970, forKey: Self.lastSessionStartKey)
+    }
+
+    func lastSessionStartDate() -> Date? {
+        let timestamp = UserDefaults.standard.double(forKey: Self.lastSessionStartKey)
+        guard timestamp > 0 else { return nil }
+        return Date(timeIntervalSince1970: timestamp)
+    }
+
+    func needsUTCReset(referenceDate: Date = .now) -> Bool {
+        guard let lastSessionStart = lastSessionStartDate() else { return false }
+        return Self.utcDayKey(for: lastSessionStart) != Self.utcDayKey(for: referenceDate)
+    }
+
+    func messages(forDayKey dayKey: String) -> [PersistedMessage] {
+        loadAll()
+            .filter { Self.utcDayKey(for: $0.timestamp) == dayKey }
+            .sorted { $0.timestamp < $1.timestamp }
+    }
+
+    static func currentUTCKey(referenceDate: Date = .now) -> String {
+        utcDayKey(for: referenceDate)
+    }
+
+    static func utcDayKey(for date: Date) -> String {
+        utcDayFormatter.string(from: date)
+    }
+
+    private func loadAll() -> [PersistedMessage] {
         if let cache { return cache }
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             cache = []
@@ -56,7 +132,7 @@ final class ChatStore {
     }
 
     func append(_ message: PersistedMessage) {
-        var all = load()
+        var all = loadAll()
         all.append(message)
         cache = all
         save(all)
@@ -64,7 +140,7 @@ final class ChatStore {
 
     func appendAll(_ messages: [PersistedMessage]) {
         guard !messages.isEmpty else { return }
-        var all = load()
+        var all = loadAll()
         all.append(contentsOf: messages)
         cache = all
         save(all)
@@ -76,6 +152,7 @@ final class ChatStore {
     func clearAll() {
         cache = []
         save([])
+        UserDefaults.standard.removeObject(forKey: Self.lastSessionStartKey)
     }
 
     private func save(_ messages: [PersistedMessage]) {

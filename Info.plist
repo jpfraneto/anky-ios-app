@@ -66,7 +66,11 @@
 	<string>Anky uses Face ID to protect your writings</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Anky uses the microphone for voice features</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Anky saves generated Ankys to your Photos library when you ask it to</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Anky uses speech recognition for writing assistance</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Anky uses your location to anchor Now sessions to a place</string>
 </dict>
 </plist>

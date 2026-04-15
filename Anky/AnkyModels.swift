@@ -82,6 +82,120 @@ struct UserProfile: Codable {
     let isPremium: Bool?
 }
 
+struct ConnectedDevicesResponse: Decodable {
+    let items: [ConnectedDevice]
+
+    init(items: [ConnectedDevice]) {
+        self.items = items
+    }
+
+    init(from decoder: Decoder) throws {
+        if let array = try? [ConnectedDevice](from: decoder) {
+            items = array
+            return
+        }
+
+        let container = try decoder.container(keyedBy: DynamicCodingKeys.self)
+        items = try container.decodeFlexibleArray(
+            ConnectedDevice.self,
+            forKeys: ["devices", "sessions", "items", "results"],
+            defaultValue: []
+        )
+    }
+}
+
+struct ConnectedDevice: Codable, Identifiable, Equatable {
+    let id: String
+    let deviceName: String?
+    let model: String?
+    let platform: String?
+    let osVersion: String?
+    let appVersion: String?
+    let location: String?
+    let ipAddress: String?
+    let lastSeenAt: String?
+    let createdAt: String?
+    let revokedAt: String?
+    let isCurrent: Bool
+    let isRevoked: Bool
+
+    init(
+        id: String,
+        deviceName: String? = nil,
+        model: String? = nil,
+        platform: String? = nil,
+        osVersion: String? = nil,
+        appVersion: String? = nil,
+        location: String? = nil,
+        ipAddress: String? = nil,
+        lastSeenAt: String? = nil,
+        createdAt: String? = nil,
+        revokedAt: String? = nil,
+        isCurrent: Bool = false,
+        isRevoked: Bool = false
+    ) {
+        self.id = id
+        self.deviceName = deviceName
+        self.model = model
+        self.platform = platform
+        self.osVersion = osVersion
+        self.appVersion = appVersion
+        self.location = location
+        self.ipAddress = ipAddress
+        self.lastSeenAt = lastSeenAt
+        self.createdAt = createdAt
+        self.revokedAt = revokedAt
+        self.isCurrent = isCurrent
+        self.isRevoked = isRevoked
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DynamicCodingKeys.self)
+
+        id = (try? container.decodeFlexibleString(forKeys: ["id", "device_id", "session_id"])) ?? UUID().uuidString
+        deviceName = try container.decodeFlexibleOptionalString(forKeys: ["device_name", "name", "label", "title"])
+        model = try container.decodeFlexibleOptionalString(forKeys: ["model", "device_model", "client_name", "browser"])
+        platform = try container.decodeFlexibleOptionalString(forKeys: ["platform", "os", "system", "device_type"])
+        osVersion = try container.decodeFlexibleOptionalString(forKeys: ["os_version", "system_version", "platform_version"])
+        appVersion = try container.decodeFlexibleOptionalString(forKeys: ["app_version", "version"])
+        location = try container.decodeFlexibleOptionalString(forKeys: ["location", "city", "region"])
+        ipAddress = try container.decodeFlexibleOptionalString(forKeys: ["ip_address", "ip"])
+        lastSeenAt = try container.decodeFlexibleOptionalString(forKeys: ["last_seen_at", "last_active_at", "updated_at", "seen_at"])
+        createdAt = try container.decodeFlexibleOptionalString(forKeys: ["created_at", "signed_in_at"])
+        revokedAt = try container.decodeFlexibleOptionalString(forKeys: ["revoked_at"])
+        isCurrent = try container.decodeFlexibleBool(
+            forKeys: ["is_current", "current", "current_session", "current_device"],
+            defaultValue: false
+        )
+        isRevoked = try container.decodeFlexibleBool(
+            forKeys: ["is_revoked", "revoked"],
+            defaultValue: revokedAt != nil
+        )
+    }
+
+    static func currentFallback(appVersion: String) -> ConnectedDevice {
+        ConnectedDevice(
+            id: "this-device",
+            deviceName: nil,
+            model: "iPhone",
+            platform: "iOS",
+            osVersion: nil,
+            appVersion: appVersion,
+            location: nil,
+            ipAddress: nil,
+            lastSeenAt: ISO8601DateFormatter().string(from: .now),
+            createdAt: nil,
+            revokedAt: nil,
+            isCurrent: true,
+            isRevoked: false
+        )
+    }
+
+    var canRevoke: Bool {
+        !isCurrent && !isRevoked
+    }
+}
+
 // MARK: - Writing
 
 struct ChatHistoryItem: Codable, Equatable {
@@ -99,12 +213,38 @@ struct QuickChatResponse: Codable {
     let response: String
 }
 
+struct AnkyConversationRequest: Codable {
+    let text: String
+}
+
+struct AnkyConversationResponse: Codable {
+    let role: String
+    let text: String
+}
+
 struct MobileWriteRequest: Codable {
     let text: String
     let duration: Double
     let sessionId: String?
     let keystrokeDeltas: [Double]?
     let isCheckpoint: Bool?
+    let nowSlug: String?
+
+    init(
+        text: String,
+        duration: Double,
+        sessionId: String?,
+        keystrokeDeltas: [Double]?,
+        isCheckpoint: Bool?,
+        nowSlug: String? = nil
+    ) {
+        self.text = text
+        self.duration = duration
+        self.sessionId = sessionId
+        self.keystrokeDeltas = keystrokeDeltas
+        self.isCheckpoint = isCheckpoint
+        self.nowSlug = nowSlug
+    }
 }
 
 struct MobileWriteResponse: Codable {
@@ -154,6 +294,36 @@ struct WritingStatusResponse: Codable {
     let mood: String?
 }
 
+struct AnkySubmitRequest: Encodable {
+    let sessionHash: String
+    let durationSeconds: Int
+    let wordCount: Int
+    let kingdom: String
+    let startedAt: String
+    let walletSignature: String
+    let session: String
+}
+
+enum AnkySubmitStreamEvent: Equatable {
+    case accepted(ankyId: String)
+    case title(String)
+    case reflectionChunk(String)
+    case reflectionComplete(String)
+    case imageURL(String)
+    case solana(signature: String)
+    case done(ankyId: String)
+    case error(stage: String, retryable: Bool)
+}
+
+struct AnkySubmitStreamResult: Equatable {
+    var ankyId: String?
+    var title: String?
+    var reflection: String = ""
+    var imageURL: String?
+    var solanaSignature: String?
+    var didReachDone = false
+}
+
 struct AnkyArtifactStatus: Codable {
     let id: String?
     let status: String
@@ -194,6 +364,10 @@ struct WritingItem: Codable, Identifiable {
     let ankyTitle: String?
     let ankyImagePath: String?
     let createdAt: String
+    let flowScore: Double?
+    let kingdom: String?
+    let energy: String?
+    let reason: String?
 
     init(
         id: String,
@@ -205,7 +379,11 @@ struct WritingItem: Codable, Identifiable {
         ankyId: String?,
         ankyTitle: String?,
         ankyImagePath: String?,
-        createdAt: String
+        createdAt: String,
+        flowScore: Double? = nil,
+        kingdom: String? = nil,
+        energy: String? = nil,
+        reason: String? = nil
     ) {
         self.id = id
         self.content = content
@@ -217,22 +395,46 @@ struct WritingItem: Codable, Identifiable {
         self.ankyTitle = ankyTitle
         self.ankyImagePath = ankyImagePath
         self.createdAt = createdAt
+        self.flowScore = flowScore
+        self.kingdom = kingdom
+        self.energy = energy
+        self.reason = reason
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: DynamicCodingKeys.self)
+        let nestedAnky = try container.decodeFlexibleOptionalNestedObject(WritingHistoryAnkyPayload.self, forKeys: ["anky", "generated_anky"])
 
         id = try container.decodeFlexibleString(forKeys: ["id", "anky_id", "session_id"])
         content = try container.decodeFlexibleString(forKeys: ["content", "text"])
         durationSeconds = try container.decodeFlexibleDouble(forKeys: ["duration_seconds", "duration"], defaultValue: 0)
         wordCount = try container.decodeFlexibleInt(forKeys: ["word_count"], defaultValue: LocalWritingCapture.wordCount(in: content))
         isAnky = try container.decodeFlexibleBool(forKeys: ["is_anky"], defaultValue: false)
-        response = try container.decodeFlexibleOptionalString(forKeys: ["response", "reflection"])
+        response = try container.decodeFlexibleOptionalString(forKeys: ["response", "reflection", "anky_response", "anky_reflection"])
+            ?? nestedAnky?.reflection
+            ?? nestedAnky?.response
         ankyId = try container.decodeFlexibleOptionalString(forKeys: ["anky_id"])
+            ?? nestedAnky?.id
         ankyTitle = try container.decodeFlexibleOptionalString(forKeys: ["anky_title", "title"])
-        ankyImagePath = try container.decodeFlexibleOptionalString(forKeys: ["anky_image_path", "image_path"])
+            ?? nestedAnky?.title
+        ankyImagePath = try container.decodeFlexibleOptionalString(forKeys: ["anky_image_path", "image_path", "image_url", "anky_image_url"])
+            ?? nestedAnky?.imagePath
+            ?? nestedAnky?.imageUrl
         createdAt = try container.decodeFlexibleString(forKeys: ["created_at", "updated_at"])
+        flowScore = try container.decodeFlexibleOptionalDouble(forKeys: ["flow_score"])
+        kingdom = try container.decodeFlexibleOptionalString(forKeys: ["kingdom"])
+        energy = try container.decodeFlexibleOptionalString(forKeys: ["energy"])
+        reason = try container.decodeFlexibleOptionalString(forKeys: ["reason"])
     }
+}
+
+private struct WritingHistoryAnkyPayload: Codable {
+    let id: String?
+    let title: String?
+    let reflection: String?
+    let response: String?
+    let imagePath: String?
+    let imageUrl: String?
 }
 
 enum CachedWritingSyncState: String, Codable {
@@ -255,6 +457,17 @@ struct CachedWritingEntry: Codable, Identifiable, Equatable {
     let createdAt: Date
     let flowScore: Double?
     let syncState: CachedWritingSyncState
+    let kingdom: String?
+    let energy: String?
+    let reason: String?
+    let ankySessionString: String?
+    let ankyFilePath: String?
+    let sessionHash: String?
+
+    /// Parsed kingdom enum. Null if not yet classified by backend.
+    var ankyKingdom: AnkyKingdom? {
+        kingdom.flatMap { AnkyKingdom(rawValue: $0.lowercased()) }
+    }
 
     var createdAtLabel: String {
         Self.dayFormatter.string(from: createdAt)
@@ -281,6 +494,32 @@ struct CachedWritingEntry: Codable, Identifiable, Equatable {
         return URL(string: "https://anky.app\(normalizedPath)")
     }
 
+    var retryableAnkyCapture: LocalWritingCapture? {
+        guard isAnky else { return nil }
+
+        let trimmedSessionString = ankySessionString?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedFilePath = ankyFilePath?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedSessionHash = sessionHash?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard (trimmedSessionString?.isEmpty == false) || (trimmedFilePath?.isEmpty == false) else {
+            return nil
+        }
+
+        return LocalWritingCapture(
+            sessionId: id,
+            prompt: prompt,
+            text: content,
+            duration: durationSeconds,
+            wordCount: wordCount,
+            keystrokeDeltas: [],
+            finishedAt: createdAt,
+            estimatedFlowScore: flowScore ?? 0,
+            ankySessionString: trimmedSessionString,
+            ankyFilePath: trimmedFilePath,
+            sessionHash: trimmedSessionHash
+        )
+    }
+
     init(
         id: String,
         prompt: String,
@@ -294,7 +533,13 @@ struct CachedWritingEntry: Codable, Identifiable, Equatable {
         ankyImagePath: String?,
         createdAt: Date,
         flowScore: Double?,
-        syncState: CachedWritingSyncState
+        syncState: CachedWritingSyncState,
+        kingdom: String? = nil,
+        energy: String? = nil,
+        reason: String? = nil,
+        ankySessionString: String? = nil,
+        ankyFilePath: String? = nil,
+        sessionHash: String? = nil
     ) {
         self.id = id
         self.prompt = prompt
@@ -309,23 +554,38 @@ struct CachedWritingEntry: Codable, Identifiable, Equatable {
         self.createdAt = createdAt
         self.flowScore = flowScore
         self.syncState = syncState
+        self.kingdom = kingdom
+        self.energy = energy
+        self.reason = reason
+        self.ankySessionString = ankySessionString
+        self.ankyFilePath = ankyFilePath
+        self.sessionHash = sessionHash
     }
 
     init(item: WritingItem, prompt: String = "") {
+        let qualifiesForAnky = item.durationSeconds >= LocalWritingCapture.requiredDurationForAnky
+            && item.wordCount >= LocalWritingCapture.requiredWordCountForAnky
+
         self.init(
             id: item.id,
             prompt: prompt,
             content: item.content,
             durationSeconds: item.durationSeconds,
             wordCount: item.wordCount,
-            isAnky: item.isAnky,
+            isAnky: item.isAnky && qualifiesForAnky,
             response: item.response,
             ankyId: item.ankyId,
             ankyTitle: item.ankyTitle,
             ankyImagePath: item.ankyImagePath,
             createdAt: Self.isoFormatter.date(from: item.createdAt) ?? .now,
-            flowScore: nil,
-            syncState: .synced
+            flowScore: item.flowScore,
+            syncState: .synced,
+            kingdom: item.kingdom,
+            energy: item.energy,
+            reason: item.reason,
+            ankySessionString: nil,
+            ankyFilePath: nil,
+            sessionHash: nil
         )
     }
 
@@ -343,6 +603,106 @@ struct CachedWritingEntry: Codable, Identifiable, Equatable {
 struct PromptResponse: Codable {
     let id: String
     let text: String
+}
+
+// MARK: - Generate
+
+struct GenerateAnkyRequest: Codable, Equatable {
+    let model: String
+    let writing: String
+    let aspectRatio: String
+}
+
+struct GenerateAnkyResponse: Codable, Equatable {
+    let ankyId: String?
+    let error: String?
+}
+
+struct GeneratedAnkyListResponse: Codable, Equatable {
+    let ankys: [GeneratedAnky]
+}
+
+struct GeneratedAnky: Codable, Equatable, Identifiable {
+    let id: String
+    let createdAt: String?
+    let title: String?
+    let status: String?
+    let origin: String?
+    let imagePath: String?
+    let imageUrl: String?
+    let imageWebp: String?
+    let imagePrompt: String?
+    let reflection: String?
+    let thinkerName: String?
+
+    private static let webDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return formatter
+    }()
+
+    private static let isoFormatter = ISO8601DateFormatter()
+
+    var createdAtDate: Date? {
+        guard let createdAt = createdAt?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !createdAt.isEmpty else {
+            return nil
+        }
+
+        return Self.isoFormatter.date(from: createdAt)
+            ?? Self.webDateFormatter.date(from: createdAt)
+    }
+
+    var createdAtLabel: String {
+        guard let createdAtDate else { return "recently" }
+        return RelativeDateTimeFormatter().localizedString(for: createdAtDate, relativeTo: .now)
+    }
+
+    var displayTitle: String {
+        if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+            return title
+        }
+        if let thinkerName = thinkerName?.trimmingCharacters(in: .whitespacesAndNewlines), !thinkerName.isEmpty {
+            return thinkerName
+        }
+        if let imagePrompt = imagePrompt?.trimmingCharacters(in: .whitespacesAndNewlines), !imagePrompt.isEmpty {
+            let words = imagePrompt.split(whereSeparator: \.isWhitespace).prefix(7).joined(separator: " ")
+            return words.isEmpty ? "anky" : words
+        }
+        return "anky"
+    }
+
+    var displayPrompt: String? {
+        let trimmed = imagePrompt?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    var remoteImageURL: URL? {
+        let candidates = [imageWebp, imageUrl, imagePath]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        for candidate in candidates {
+            if candidate.hasPrefix("http://") || candidate.hasPrefix("https://") {
+                return URL(string: candidate)
+            }
+
+            if candidate.hasPrefix("/") {
+                return URL(string: "https://anky.app\(candidate)")
+            }
+
+            if candidate.hasSuffix(".webp"), !candidate.contains("/") {
+                return URL(string: "https://anky.app/data/images/\(candidate)")
+            }
+
+            return URL(string: "https://anky.app/\(candidate)")
+        }
+
+        return nil
+    }
 }
 
 // MARK: - Altar
@@ -417,6 +777,10 @@ struct QRSealRequest: Codable, Equatable {
 struct QRSealResponse: Codable, Equatable {
     let ok: Bool
     let solanaAddress: String
+}
+
+struct SharedAnkyLink: Identifiable, Equatable {
+    let id: String
 }
 
 // MARK: - Child Worlds
@@ -515,6 +879,19 @@ private extension KeyedDecodingContainer where Key == DynamicCodingKeys {
         return defaultValue
     }
 
+    func decodeFlexibleOptionalDouble(forKeys keys: [String]) throws -> Double? {
+        for key in keys {
+            let codingKey = DynamicCodingKeys(stringValue: key)!
+            if let value = try decodeIfPresent(Double.self, forKey: codingKey) {
+                return value
+            }
+            if let value = try decodeIfPresent(Int.self, forKey: codingKey) {
+                return Double(value)
+            }
+        }
+        return nil
+    }
+
     func decodeFlexibleInt(forKeys keys: [String], defaultValue: Int) throws -> Int {
         for key in keys {
             let codingKey = DynamicCodingKeys(stringValue: key)!
@@ -534,8 +911,40 @@ private extension KeyedDecodingContainer where Key == DynamicCodingKeys {
             if let value = try decodeIfPresent(Bool.self, forKey: codingKey) {
                 return value
             }
+            if let value = try decodeIfPresent(Int.self, forKey: codingKey) {
+                return value != 0
+            }
+            if let value = try decodeIfPresent(String.self, forKey: codingKey) {
+                let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if normalized == "true" || normalized == "1" || normalized == "yes" {
+                    return true
+                }
+                if normalized == "false" || normalized == "0" || normalized == "no" {
+                    return false
+                }
+            }
         }
         return defaultValue
+    }
+
+    func decodeFlexibleArray<T: Decodable>(_ type: T.Type, forKeys keys: [String], defaultValue: [T]) throws -> [T] {
+        for key in keys {
+            let codingKey = DynamicCodingKeys(stringValue: key)!
+            if let value = try decodeIfPresent([T].self, forKey: codingKey) {
+                return value
+            }
+        }
+        return defaultValue
+    }
+
+    func decodeFlexibleOptionalNestedObject<T: Decodable>(_ type: T.Type, forKeys keys: [String]) throws -> T? {
+        for key in keys {
+            let codingKey = DynamicCodingKeys(stringValue: key)!
+            if let value = try decodeIfPresent(T.self, forKey: codingKey) {
+                return value
+            }
+        }
+        return nil
     }
 }
 
@@ -551,6 +960,38 @@ struct LocalWritingCapture: Equatable {
     let keystrokeDeltas: [Double]
     let finishedAt: Date
     let estimatedFlowScore: Double
+    let nowSlug: String?
+    let ankySessionString: String?
+    let ankyFilePath: String?
+    let sessionHash: String?
+
+    init(
+        sessionId: String,
+        prompt: String,
+        text: String,
+        duration: Double,
+        wordCount: Int,
+        keystrokeDeltas: [Double],
+        finishedAt: Date,
+        estimatedFlowScore: Double,
+        nowSlug: String? = nil,
+        ankySessionString: String? = nil,
+        ankyFilePath: String? = nil,
+        sessionHash: String? = nil
+    ) {
+        self.sessionId = sessionId
+        self.prompt = prompt
+        self.text = text
+        self.duration = duration
+        self.wordCount = wordCount
+        self.keystrokeDeltas = keystrokeDeltas
+        self.finishedAt = finishedAt
+        self.estimatedFlowScore = estimatedFlowScore
+        self.nowSlug = nowSlug
+        self.ankySessionString = ankySessionString
+        self.ankyFilePath = ankyFilePath
+        self.sessionHash = sessionHash
+    }
 
     var qualifiesForAnky: Bool {
         Self.qualifiesForAnky(text: text, duration: duration)
@@ -562,7 +1003,8 @@ struct LocalWritingCapture: Equatable {
             duration: duration,
             sessionId: sessionId,
             keystrokeDeltas: keystrokeDeltas,
-            isCheckpoint: nil
+            isCheckpoint: nil,
+            nowSlug: nowSlug
         )
     }
 
@@ -572,7 +1014,8 @@ struct LocalWritingCapture: Equatable {
             duration: duration,
             sessionId: sessionId,
             keystrokeDeltas: keystrokeDeltas,
-            isCheckpoint: true
+            isCheckpoint: true,
+            nowSlug: nowSlug
         )
     }
 
@@ -755,4 +1198,126 @@ struct GuidanceSession: Codable, Equatable, Identifiable {
     let description: String
     let durationSeconds: Int
     let phases: [GuidancePhase]
+}
+
+// MARK: - Sealed Write (enclave endpoint)
+
+struct EnclavePublicKeyResponse: Codable {
+    let encryptionPublicKey: String  // base64 X25519 pubkey
+}
+
+/// Request body for POST /api/sealed-write.
+/// Uses explicit CodingKeys to emit camelCase JSON (the shared encoder uses snake_case).
+struct SealedWriteRequest: Codable {
+    let sessionId: String
+    let ciphertext: String           // base64: AES-256-GCM encrypted writing
+    let nonce: String                // base64: 12-byte random nonce
+    let tag: String                  // base64: GCM auth tag
+    let ephemeralPublicKey: String   // base64: ephemeral X25519 public key
+    let sessionHash: String          // hex: SHA256 of PLAINTEXT writing
+    let duration: Double
+    let wordCount: Int
+    let userEncryptedKey: String?    // base64: user's iCloud Keychain X25519 public key (optional)
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId
+        case ciphertext
+        case nonce
+        case tag
+        case ephemeralPublicKey
+        case sessionHash
+        case duration
+        case wordCount
+        case userEncryptedKey
+    }
+}
+
+struct SealedWriteResponse: Codable {
+    let ok: Bool
+    let sessionId: String?
+    let sessionHash: String?
+    let ankyId: String?
+    let isAnky: Bool?
+    let solanaTx: String?
+}
+
+// MARK: - Relay (.anky session protocol)
+
+struct RelayEncryptedPayload: Codable {
+    let ephemeralPublicKey: String  // base64
+    let nonce: String              // base64
+    let tag: String                // base64
+    let ciphertext: String         // base64
+    let sessionHash: String        // hex SHA-256 of session string
+}
+
+struct RelayRequest: Codable {
+    let encrypted: RelayEncryptedPayload
+    let writerPubkey: String  // base58 Solana address
+}
+
+struct RelayResponse: Codable {
+    let hash: String?
+    let arweaveTx: String?
+    let solanaTx: String?
+    let explorerUrl: String?
+    let arweaveUrl: String?
+}
+
+// MARK: - Now Sessions
+
+enum NowMode: String, Codable {
+    case sticker
+    case live
+}
+
+struct CreateNowRequest: Codable {
+    let prompt: String
+    let mode: NowMode
+    let latitude: Double?
+    let longitude: Double?
+}
+
+struct CreateNowResponse: Codable {
+    let slug: String
+    let qrUrl: String
+}
+
+struct NowSession: Codable, Identifiable {
+    let id: String?
+    let sessionId: String?
+    let preview: String?
+    let wordCount: Int?
+    let displayName: String?
+
+    var stableId: String { id ?? sessionId ?? UUID().uuidString }
+}
+
+struct NowRoom: Codable {
+    let slug: String
+    let prompt: String
+    let mode: NowMode
+    let started: Bool?
+    let startsAt: String?
+    let presenceCount: Int?
+    let promptImageUrl: String?
+    let promptImageStatus: String?
+    let sessions: [NowSession]?
+    let latitude: Double?
+    let longitude: Double?
+}
+
+struct NowJoinResponse: Codable {
+    let ok: Bool
+    let presenceCount: Int?
+}
+
+struct NowStartResponse: Codable {
+    let ok: Bool
+    let startsAt: String?
+}
+
+struct NowHeartbeatResponse: Codable {
+    let ok: Bool
+    let presenceCount: Int?
 }

@@ -1,5 +1,7 @@
 # Lesson 009: Altar-First Shell, Daily Keyboard, and the Short-Write Chat Loop
 
+Historical note: parts of this lesson describe an older routed shell. The current active writing route is covered in [010_forward_only_writing_and_daily_archives.md](/Users/kithkui/Desktop/Anky/JP_TUTORIAL/010_forward_only_writing_and_daily_archives.md).
+
 ## Why this lesson exists
 
 The app no longer opens straight into writing.

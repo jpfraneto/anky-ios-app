@@ -72,9 +72,11 @@ final class AppState: ObservableObject {
     @Published var hasBackedUpPhrase = false
     @Published var hasCompletedWelcome = UserDefaults.standard.bool(forKey: welcomeStateKey)
     @Published var hasUnlockedFullExperience = UserDefaults.standard.bool(forKey: unlockStateKey)
-    @Published var hasInProgressWriting = WritingSessionStore.hasDraft()
+    @Published var hasInProgressWriting = WritingSessionStore.hasDraft() || WritingSessionStore.hasRecoverableLiveSession()
     @Published var deepLinkPrompt: String?
     @Published var qrSealChallenge: QRSealChallenge?
+    @Published var sharedAnkyLink: SharedAnkyLink?
+    @Published var pendingNowSlug: String?
 
     // Mirror architecture
     @Published var mirrorState: MirrorState = {
@@ -134,6 +136,36 @@ final class AppState: ObservableObject {
 
     var isAuthenticated: Bool { authStatus == .signedIn }
 
+    /// Whether the user has completed a writing session today (UTC)
+    var hasWrittenToday: Bool {
+        let now = Date()
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        return writingHistory.contains { entry in
+            utc.isDate(entry.createdAt, inSameDayAs: now)
+        }
+    }
+
+    /// Whether the user has completed an anky-qualifying session today (UTC)
+    var hasWrittenAnkyToday: Bool {
+        let now = Date()
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        return writingHistory.contains { entry in
+            entry.isAnky && utc.isDate(entry.createdAt, inSameDayAs: now)
+        }
+    }
+
+    /// Today's writing entry (if any), UTC-based
+    var todaysWriting: CachedWritingEntry? {
+        let now = Date()
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(identifier: "UTC")!
+        return writingHistory.first { entry in
+            utc.isDate(entry.createdAt, inSameDayAs: now)
+        }
+    }
+
     var cloudHistory: [CachedWritingEntry] {
         writingHistory.filter { $0.syncState == .synced }
     }
@@ -147,7 +179,7 @@ final class AppState: ObservableObject {
         didBootstrap = true
         prompt = PromptLibrary.currentPrompt()
         writingHistory = WritingCacheStore.migrateLegacyShortPendingWrites()
-        hasInProgressWriting = WritingSessionStore.hasDraft()
+        hasInProgressWriting = WritingSessionStore.hasDraft() || WritingSessionStore.hasRecoverableLiveSession()
         hasUnlockedFullExperience = UserDefaults.standard.bool(forKey: Self.unlockStateKey)
         hasCompletedWelcome = UserDefaults.standard.bool(forKey: Self.welcomeStateKey)
 
@@ -156,7 +188,7 @@ final class AppState: ObservableObject {
         mirrorState = MirrorState(rawValue: savedMirrorState) ?? .virgin
 
         // Ensure encryption keypair exists (for session sealing)
-        try? AnkyProtocol.ensureKeypair()
+        _ = try? AnkyProtocol.ensureKeypair()
 
         let identityStatus = SeedIdentityManager.shared.status()
         if !identityStatus.hasIdentity {
@@ -293,14 +325,21 @@ final class AppState: ObservableObject {
         return await refreshAuthenticatedState(forceFreshSession: true)
     }
 
-    func applyPersistedAnkySuccess(capture: LocalWritingCapture, response: MobileWriteResponse) async {
+    func applyPersistedAnkySuccess(
+        capture: LocalWritingCapture,
+        response: MobileWriteResponse,
+        shouldRouteToUnlocked: Bool = true,
+        shouldSwitchToStories: Bool = true
+    ) async {
         recordWriting(capture, response: response, syncState: .synced)
         markUnlocked()
         await refreshUserProfile()
         await refreshWritings()
         // Only auto-route to unlocked if not in onboarding (onboarding manages its own transitions)
-        if route != .welcome {
-            currentTab = .stories
+        if shouldRouteToUnlocked, route != .welcome {
+            if shouldSwitchToStories {
+                currentTab = .stories
+            }
             route = .unlocked
         }
     }
@@ -322,6 +361,7 @@ final class AppState: ObservableObject {
         SealedSessionStore.clear()
         WritingCacheStore.clear()
         WritingSessionStore.clearDraft()
+        WritingSessionStore.clearLiveSession()
         PendingMintStore.clear()
         ArweaveStore.clear()
         AnkyNameStore.clear()
@@ -401,7 +441,9 @@ final class AppState: ObservableObject {
         syncState: CachedWritingSyncState,
         reflectionText: String? = nil
     ) {
-        let isPersistedAnky = response?.persisted == true && response?.isAnky == true
+        let isPersistedAnky = response?.persisted == true
+            && response?.isAnky == true
+            && capture.qualifiesForAnky
         let isPendingAnky = syncState == .pending && capture.qualifiesForAnky
         let isAnky = isPersistedAnky || isPendingAnky
         let entry = CachedWritingEntry(
@@ -417,16 +459,51 @@ final class AppState: ObservableObject {
             ankyImagePath: nil,
             createdAt: capture.finishedAt,
             flowScore: response?.flowScore ?? capture.estimatedFlowScore,
-            syncState: syncState
+            syncState: syncState,
+            ankySessionString: capture.ankySessionString,
+            ankyFilePath: capture.ankyFilePath,
+            sessionHash: capture.sessionHash
         )
 
         writingHistory = WritingCacheStore.prepend(entry)
         prompt = PromptLibrary.advancePrompt(seed: capture.text)
-        hasInProgressWriting = WritingSessionStore.hasDraft()
+        hasInProgressWriting = WritingSessionStore.hasDraft() || WritingSessionStore.hasRecoverableLiveSession()
     }
 
     func storeReflection(_ reflection: String, for sessionId: String) {
         writingHistory = WritingCacheStore.updateResponse(for: sessionId, response: reflection)
+    }
+
+    func storeGeneratedArtifacts(
+        for sessionId: String,
+        reflection: String? = nil,
+        ankyTitle: String? = nil,
+        ankyImagePath: String? = nil
+    ) {
+        writingHistory = WritingCacheStore.updateGeneratedArtifacts(
+            for: sessionId,
+            response: reflection,
+            ankyTitle: ankyTitle,
+            ankyImagePath: ankyImagePath
+        )
+    }
+
+    func storeRetryArtifacts(
+        for sessionId: String,
+        ankySessionString: String? = nil,
+        ankyFilePath: String? = nil,
+        sessionHash: String? = nil
+    ) {
+        writingHistory = WritingCacheStore.updateRetryArtifacts(
+            for: sessionId,
+            ankySessionString: ankySessionString,
+            ankyFilePath: ankyFilePath,
+            sessionHash: sessionHash
+        )
+    }
+
+    func updateWritingSyncState(for sessionId: String, syncState: CachedWritingSyncState) {
+        writingHistory = WritingCacheStore.updateSyncState(for: sessionId, syncState: syncState)
     }
 
     func queueWrite(_ capture: LocalWritingCapture) async {
@@ -442,6 +519,14 @@ final class AppState: ObservableObject {
 
     func dismissQRSealChallenge() {
         qrSealChallenge = nil
+    }
+
+    func presentSharedAnky(id: String) {
+        sharedAnkyLink = SharedAnkyLink(id: id)
+    }
+
+    func dismissSharedAnky() {
+        sharedAnkyLink = nil
     }
 
     private func consumeAuthenticatedProfile(_ profile: UserProfile) {
@@ -462,6 +547,13 @@ final class AppState: ObservableObject {
             syncMessage = "\(processed) pending sync\(processed == 1 ? "" : "s") delivered"
             await refreshUserProfile()
             await refreshWritings()
+        }
+        let pendingAnkyRetries = await PendingAnkyRetryService.retryPendingEntries(appState: self)
+        if pendingAnkyRetries.syncedCount > 0 {
+            print("[PendingAnkyRetry] Retried \(pendingAnkyRetries.syncedCount) pending anky submit(s)")
+        }
+        if pendingAnkyRetries.failedCount > 0 {
+            print("[PendingAnkyRetry] Failed \(pendingAnkyRetries.failedCount) pending anky retry attempt(s)")
         }
         // Retry any sealed sessions that failed to reach the enclave
         let sealedRetries = await SealedSessionStore.retryPending(using: AnkyAPI.shared)
