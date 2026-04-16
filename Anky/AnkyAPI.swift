@@ -18,7 +18,7 @@ struct AnkySubmitStreamFailure: LocalizedError, Equatable {
 final class AnkyAPI {
     static let shared = AnkyAPI()
 
-    private let baseURL: URL
+    let baseURL: URL
     private let webBaseURL: URL
     private let session: URLSession
     private let decoder: JSONDecoder
@@ -29,9 +29,17 @@ final class AnkyAPI {
         formatter.timeZone = TimeZone(identifier: "UTC")
         return formatter
     }()
+    
+    private static var defaultBaseURL: URL {
+            #if DEBUG
+            return URL(string: "https://staging.anky.app/swift/v2")!
+            #else
+            return URL(string: "https://anky.app/swift/v2")!
+            #endif
+    }   
 
     init(
-        baseURL: URL = URL(string: "https://anky.app/swift/v2")!,
+        baseURL: URL = AnkyAPI.defaultBaseURL,
         webBaseURL: URL? = nil,
         session: URLSession = .shared
     ) {

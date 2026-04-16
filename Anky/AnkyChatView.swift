@@ -1324,6 +1324,8 @@ struct AnkyChatView: View {
             .buttonStyle(.plain)
 
             Spacer()
+
+            ServerIndicator()
         }
         .padding(.horizontal, 16)
         .padding(.top, 6)
@@ -2218,6 +2220,17 @@ struct AnkyModeView: View {
                 if showMilestoneOverlay {
                     MilestoneCelebrationOverlay(reduceMotion: reduceMotion)
                         .transition(.opacity)
+                }
+
+                VStack {
+                    HStack {
+                        Spacer()
+                        ServerIndicator()
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+
+                    Spacer()
                 }
             }
         }

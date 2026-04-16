@@ -188,15 +188,19 @@ struct AnkyProfileView: View {
                 Spacer(minLength: 0)
             }
 
-            Button {
-                showSettings = true
-            } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(Color.ankyTextMuted)
-                    .frame(width: 32, height: 32)
+            HStack(spacing: 10) {
+                ServerIndicator()
+
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 18, weight: .medium))
+                        .foregroundStyle(Color.ankyTextMuted)
+                        .frame(width: 32, height: 32)
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
