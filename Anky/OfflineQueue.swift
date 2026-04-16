@@ -114,12 +114,10 @@ extension PendingAction {
     }
 
     nonisolated func qualifiesForAnky(text: String, duration: Double) -> Bool {
-        duration >= 480 && wordCount(in: text) >= 300
+        AnkyContract.Qualification.qualifies(text: text, durationSeconds: duration)
     }
 
     nonisolated func wordCount(in text: String) -> Int {
-        text
-            .split { $0.isWhitespace || $0.isNewline }
-            .count
+        AnkyContract.Qualification.wordCount(in: text)
     }
 }

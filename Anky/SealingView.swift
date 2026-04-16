@@ -373,6 +373,7 @@ struct SealingView: View {
                 statusHasAccepted = true
             }
             viewModel.markSealingAccepted(ankyId: ankyId)
+            persistStoredSubmissionIfNeeded(ankyId: ankyId)
 
         case .title(let title):
             titleText = title
@@ -401,6 +402,7 @@ struct SealingView: View {
             persistStoredSubmissionIfNeeded(ankyId: ankyId)
             persistArtifacts()
             deliverStreamedOutcomeIfPossible(markComplete: true)
+            reconcileCanonicalArchive(pollUntilSettled: true, markComplete: true)
             transitionToSealed()
 
         case .error(let stage, _):
@@ -411,6 +413,7 @@ struct SealingView: View {
                 }
                 persistArtifacts()
                 deliverStreamedOutcomeIfPossible(markComplete: true)
+                reconcileCanonicalArchive(pollUntilSettled: true, markComplete: true)
                 transitionToSealed()
             } else {
                 handleStreamFailure(stage: stage)
@@ -430,6 +433,7 @@ struct SealingView: View {
             persistStoredSubmissionIfNeeded(ankyId: ankyId)
             persistArtifacts()
             deliverStreamedOutcomeIfPossible(markComplete: true)
+            reconcileCanonicalArchive(pollUntilSettled: true, markComplete: true)
             transitionToSealed()
             streamTask = nil
             return
@@ -457,31 +461,13 @@ struct SealingView: View {
         guard !didPersistStoredSubmission else { return }
         didPersistStoredSubmission = true
 
-        let response = MobileWriteResponse(
-            ok: true,
-            sessionId: capture.sessionId,
-            outcome: "anky",
-            wordCount: capture.wordCount,
-            durationSeconds: capture.duration,
-            flowScore: capture.estimatedFlowScore,
-            persisted: true,
-            spawned: SpawnedArtifacts(
-                ankyId: ankyId,
-                feedback: nil,
-                meditation: nil,
-                breathwork: nil,
-                cuentacuentos: nil
-            ),
-            walletAddress: nil,
-            statusUrl: nil,
-            ankyResponse: nil,
-            nextPrompt: nil,
-            mood: nil,
-            error: nil
-        )
-
         Task {
-            await appState.applyPersistedAnkySuccess(capture: capture, response: response)
+            await appState.storeCanonicalAcceptedSubmission(
+                for: capture.sessionId,
+                backendAnkyId: ankyId
+            )
+            await DailyPromptNotificationManager.scheduleWithPrompt(appState.prompt)
+            DailyPromptNotificationManager.clearPendingSession()
             WritingFlowModel.autoMintCNFT(sessionId: capture.sessionId, appState: appState)
             WritingFlowModel.archiveToArweave(sessionId: capture.sessionId, text: capture.text)
         }
@@ -498,6 +484,48 @@ struct SealingView: View {
         if !fullReflection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             AnkyNameStore.updateFromReflection(fullReflection)
         }
+    }
+
+    private func reconcileCanonicalArchive(
+        pollUntilSettled: Bool,
+        markComplete: Bool
+    ) {
+        Task {
+            guard let updated = await appState.reconcileCanonicalArchiveRecord(
+                sessionId: capture.sessionId,
+                pollUntilSettled: pollUntilSettled
+            ) else {
+                return
+            }
+
+            await MainActor.run {
+                absorbArchiveRecord(updated, markComplete: markComplete)
+            }
+        }
+    }
+
+    private func absorbArchiveRecord(
+        _ record: LocalArchiveRecord,
+        markComplete: Bool
+    ) {
+        if let title = record.sessionBundle.title3Words?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !title.isEmpty {
+            titleText = title
+        }
+
+        if let reflection = record.sessionBundle.reflection?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !reflection.isEmpty {
+            fullReflection = reflection
+            viewModel.replaceSealingReflection(reflection)
+        }
+
+        if let imageLocator = record.sessionBundle.image?.canonicalLocator?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !imageLocator.isEmpty {
+            streamedImageURL = imageLocator
+        }
+
+        persistArtifacts()
+        deliverStreamedOutcomeIfPossible(markComplete: markComplete)
     }
 
     private func deliverStreamedOutcomeIfPossible(markComplete: Bool) {

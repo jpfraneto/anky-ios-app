@@ -35,3 +35,6 @@ The goal is not to teach Swift in the abstract. The goal is to teach Swift, Swif
 - `020_settings_formalities_and_in_app_safari.md`
 - `021_writer_dismissal_and_first_responder_races.md`
 - `022_settings_connected_devices_and_premium_sheet.md`
+- `023_contract_foundation_bundle_archive_and_proof.md`
+- `024_archive_normalization_and_canonical_local_models.md`
+- `025_runtime_cutover_local_archive_first.md`

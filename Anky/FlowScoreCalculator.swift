@@ -16,7 +16,7 @@ enum FlowScoreCalculator {
     /// - Rhythm consistency (30%): 1 - (stddev / mean) of keystroke deltas, clamped 0–1
     /// - Velocity WPM (25%): (wordCount / durationMinutes) / 60, clamped 0–1
     /// - Sustained attention (25%): penalize pauses > 3s. score = max(0, 1 - count * 0.05)
-    /// - Duration bonus (20%): min(durationSeconds / 480, 1.0)
+    /// - Duration bonus (20%): min(durationSeconds / canonical Anky duration, 1.0)
     static func calculate(
         keystrokeDeltas: [Double],
         wordCount: Int,
@@ -53,7 +53,7 @@ enum FlowScoreCalculator {
         let attention = min(max(1.0 - Double(longPauseCount) * 0.05, 0), 1)
 
         // Duration bonus (20%)
-        let duration = min(max(durationSeconds / 480.0, 0), 1)
+        let duration = min(max(durationSeconds / AnkyContract.Qualification.minimumDurationSeconds, 0), 1)
 
         // Weighted sum
         let score = (rhythm * 0.30) + (velocity * 0.25) + (attention * 0.25) + (duration * 0.20)

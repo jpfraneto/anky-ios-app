@@ -456,7 +456,7 @@ struct MirrorWritingView: View {
 
     /// Subtle progress — vignette recedes as time passes
     private var vignetteRecession: Double {
-        min(model.sessionElapsed / 480.0, 1.0)
+        min(model.sessionElapsed / AnkyContract.Qualification.minimumDurationSeconds, 1.0)
     }
 
     var body: some View {

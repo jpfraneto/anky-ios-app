@@ -95,7 +95,7 @@ final class WritingFlowModel: ObservableObject {
     @Published var pendingCapture: LocalWritingCapture?
     @Published var completedCapture: LocalWritingCapture?
 
-    private let sessionGoal = LocalWritingCapture.requiredDurationForAnky
+    private let sessionGoal = AnkyContract.Qualification.minimumDurationSeconds
     private let idleWarningStart: TimeInterval = 3
     private let idleLimit: TimeInterval = 8
     private let draftSaveCadence: TimeInterval = 5
@@ -359,8 +359,8 @@ final class WritingFlowModel: ObservableObject {
             return
         }
 
-        // Primary path: encrypt on-device and submit via sealed-write endpoint.
-        // Plaintext NEVER leaves the device. The enclave decrypts and generates reflection + image.
+        // Legacy non-canonical submit path kept alive until the contract cutover.
+        // The locked core contract is the session-bundle `/api/anky/submit` path.
         do {
             // Fetch enclave public key dynamically (fire-and-forget cache for future calls)
             await Self.refreshEnclavePublicKeyIfNeeded()
@@ -602,7 +602,7 @@ final class WritingFlowModel: ObservableObject {
         lastTick = now
     }
 
-    /// Auto-mint a cNFT for every persisted anky. Fire-and-forget with retry queue.
+    /// Legacy satellite surface, not part of the locked canonical Anky loop.
     static func autoMintCNFT(sessionId: String, appState: AppState) {
         Task {
             do {
@@ -629,7 +629,7 @@ final class WritingFlowModel: ObservableObject {
         }
     }
 
-    /// Encrypt and relay a .anky v2 session string to the enclave. Fire-and-forget.
+    /// Legacy proof/archive helper, not the canonical proof model.
     static func relayAnkySession(sessionString: String, sessionHash: String) {
         Task {
             do {
@@ -655,7 +655,7 @@ final class WritingFlowModel: ObservableObject {
         }
     }
 
-    /// Upload writing text to Arweave via Irys for permanent storage. Fire-and-forget.
+    /// Legacy non-canonical plaintext archive helper kept until archive cutover.
     static func archiveToArweave(sessionId: String, text: String) {
         Task {
             do {

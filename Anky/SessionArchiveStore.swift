@@ -1,6 +1,8 @@
 import Foundation
 import Combine
 
+/// Legacy app-group archive reader from the pre-bundle model.
+/// New archive work should center `LocalArchiveRecord`.
 class SessionArchiveStore: ObservableObject {
     @Published var sessions: [AnkySession] = []
 

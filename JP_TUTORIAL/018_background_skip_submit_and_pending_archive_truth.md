@@ -1,5 +1,8 @@
 # 018 Background Skip Submit And Pending Archive Truth
 
+Note as of April 16, 2026:
+This lesson still explains why pending local archive truth matters, but the current runtime now records that truth in `LocalArchiveRecord` and reconciles completion through session-hash snapshot/proof readback instead of legacy status polling. Read `025_runtime_cutover_local_archive_first.md` for the current path.
+
 This lesson explains the bug JP actually needs to understand:
 
 - the user finishes a real 8-minute anky

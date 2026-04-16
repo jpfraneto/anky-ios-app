@@ -224,7 +224,7 @@ struct WritingBottomBar: View {
     let qualifiesForAnky: Bool
     var onSend: (() -> Void)?
 
-    private let sessionGoal: TimeInterval = 480 // 8 minutes
+    private let sessionGoal: TimeInterval = AnkyContract.Qualification.minimumDurationSeconds
 
     /// Countdown from 8:00 to 0:00, then count up from 8:00
     private var timerLabel: String {

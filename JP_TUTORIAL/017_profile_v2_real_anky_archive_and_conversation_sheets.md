@@ -1,5 +1,8 @@
 # 017 Profile V2, Real Anky Archive, and Conversation Sheets
 
+Note as of April 16, 2026:
+This lesson captures the first profile-v2 pass. The current profile runtime now reads primarily from `LocalArchiveRecord` rather than `AppState.writingHistory`. Read `025_runtime_cutover_local_archive_first.md` for the up-to-date archive/proof model.
+
 This lesson explains the new active profile surface in `Anky/AnkyProfileView.swift`.
 
 The important mental model is:

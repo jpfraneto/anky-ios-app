@@ -294,6 +294,88 @@ struct WritingStatusResponse: Codable {
     let mood: String?
 }
 
+/// Canonical processor submit/readback models for the local-archive-first flow.
+struct CanonicalProcessorSubmitResponse: Codable, Equatable {
+    let sessionHash: String
+    let statusPath: String?
+    let proofPath: String?
+    let artifactSetValid: Bool?
+}
+
+struct CanonicalProcessorReadbackPaths: Codable, Equatable {
+    let statusPath: String?
+    let proofPath: String?
+}
+
+struct CanonicalProcessorSessionIdentity: Codable, Equatable {
+    let sessionHash: String
+    let ankyId: String?
+    let walletAddress: String?
+}
+
+struct CanonicalProcessorLifecycleTimestamps: Codable, Equatable {
+    let submittedAt: String?
+    let acceptedAt: String?
+    let reflectedAt: String?
+    let imagedAt: String?
+    let provedAt: String?
+    let completedAt: String?
+}
+
+struct CanonicalProcessorStatusSnapshot: Codable, Equatable {
+    let overallStatus: String?
+    let titleStatus: String?
+    let reflectionStatus: String?
+    let imageStatus: String?
+    let proofStatus: String?
+}
+
+struct CanonicalProcessorImageArtifact: Codable, Equatable {
+    let imageUrl: String?
+    let artifactRef: String?
+    let mimeType: String?
+}
+
+struct CanonicalProcessorArtifacts: Codable, Equatable {
+    let title: String?
+    let reflection: String?
+    let image: CanonicalProcessorImageArtifact?
+}
+
+struct CanonicalProofReadback: Codable, Equatable {
+    let sessionHash: String?
+    let status: String?
+    let receipt: String?
+    let proofUrl: String?
+    let walletSignature: String?
+    let verificationStatus: String?
+    let completedAt: String?
+}
+
+struct LegacyProcessorRetentionBoundary: Codable, Equatable {
+    let plaintextWritingRetained: Bool?
+    let sessionPayloadRetained: Bool?
+}
+
+struct CanonicalProcessorStatusResponse: Codable, Equatable {
+    let identity: CanonicalProcessorSessionIdentity
+    let readbackPaths: CanonicalProcessorReadbackPaths?
+    let status: CanonicalProcessorStatusSnapshot?
+    let lifecycle: CanonicalProcessorLifecycleTimestamps?
+    let artifacts: CanonicalProcessorArtifacts?
+    let proof: CanonicalProofReadback?
+    let artifactCompleteness: AnkyArtifactCompleteness?
+    let artifactSetValid: Bool?
+    let legacyRetentionBoundary: LegacyProcessorRetentionBoundary?
+}
+
+struct CanonicalProofResponse: Codable, Equatable {
+    let identity: CanonicalProcessorSessionIdentity
+    let readbackPaths: CanonicalProcessorReadbackPaths?
+    let proof: CanonicalProofReadback
+}
+
+/// Canonical `/api/anky/submit` request payload for the current core processor path.
 struct AnkySubmitRequest: Encodable {
     let sessionHash: String
     let durationSeconds: Int
@@ -324,6 +406,118 @@ struct AnkySubmitStreamResult: Equatable {
     var didReachDone = false
 }
 
+extension CanonicalProofReadback {
+    var canonicalProofMetadata: AnkyProofMetadata? {
+        let resolvedSessionHash = normalized(sessionHash)
+        guard let resolvedSessionHash else { return nil }
+
+        return AnkyProofMetadata(
+            sessionHash: resolvedSessionHash,
+            walletSignature: normalized(walletSignature),
+            anchorSignature: normalized(receipt),
+            proofURL: normalized(proofUrl),
+            source: .apiSubmit,
+            verificationStatus: resolvedVerificationStatus,
+            anchoredAt: completedAt.flatMap { ISO8601DateFormatter().date(from: $0) }
+        )
+    }
+
+    private var resolvedVerificationStatus: AnkyProofVerificationStatus {
+        let candidates = [verificationStatus, status]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+
+        for candidate in candidates {
+            if candidate.contains("verified") || candidate.contains("complete") || candidate.contains("anchored") {
+                return .verified
+            }
+            if candidate.contains("pending") || candidate.contains("processing") || candidate.contains("queued") {
+                return .pending
+            }
+            if candidate.contains("fail") || candidate.contains("error") {
+                return .failed
+            }
+        }
+
+        return .missing
+    }
+}
+
+extension CanonicalProcessorStatusResponse {
+    var canonicalProofMetadata: AnkyProofMetadata? {
+        proof?.canonicalProofMetadata
+    }
+
+    var canonicalImageArtifact: AnkyImageArtifact? {
+        guard let image = artifacts?.image else { return nil }
+        return AnkyImageArtifact(
+            remoteURL: normalized(image.imageUrl),
+            mimeType: normalized(image.mimeType)
+        )
+    }
+
+    var lastCanonicalUpdateAt: Date? {
+        let formatter = ISO8601DateFormatter()
+        let candidates = [
+            lifecycle?.completedAt,
+            lifecycle?.provedAt,
+            lifecycle?.imagedAt,
+            lifecycle?.reflectedAt,
+            lifecycle?.acceptedAt,
+            lifecycle?.submittedAt
+        ]
+
+        for candidate in candidates {
+            if let normalized = normalized(candidate),
+               let date = formatter.date(from: normalized) {
+                return date
+            }
+        }
+
+        return nil
+    }
+}
+
+extension CanonicalProofResponse {
+    var canonicalProofMetadata: AnkyProofMetadata? {
+        proof.canonicalProofMetadata
+    }
+}
+
+extension LocalArchiveRecord {
+    func applyingCanonicalProcessorStatus(_ response: CanonicalProcessorStatusResponse) -> LocalArchiveRecord {
+        applyingArtifacts(
+            title3Words: normalized(response.artifacts?.title),
+            reflection: normalized(response.artifacts?.reflection),
+            imageLocator: normalized(response.artifacts?.image?.imageUrl),
+            proofMetadata: response.canonicalProofMetadata ?? sessionBundle.proofMetadata,
+            backendAnkyId: normalized(response.identity.ankyId),
+            updatedAt: response.lastCanonicalUpdateAt ?? .now
+        )
+        .reconcilingCanonicalSyncStatus(updatedAt: response.lastCanonicalUpdateAt ?? .now)
+    }
+
+    func applyingCanonicalProofReadback(_ response: CanonicalProofResponse) -> LocalArchiveRecord {
+        let updatedAt = response.proof.completedAt.flatMap { ISO8601DateFormatter().date(from: $0) } ?? .now
+
+        return applyingArtifacts(
+            proofMetadata: response.canonicalProofMetadata,
+            backendAnkyId: normalized(response.identity.ankyId),
+            updatedAt: updatedAt
+        )
+        .reconcilingCanonicalSyncStatus(updatedAt: updatedAt)
+    }
+}
+
+private func normalized(_ text: String?) -> String? {
+    guard let trimmed = text?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !trimmed.isEmpty else {
+        return nil
+    }
+    return trimmed
+}
+
+/// Legacy backend `/swift/v2/writing/{id}/status` compatibility projection.
+/// Canonical runtime proof/artifact reconciliation now uses session-hash readback.
 struct AnkyArtifactStatus: Codable {
     let id: String?
     let status: String
@@ -353,6 +547,8 @@ struct BreathworkArtifactStatus: Codable {
     let style: String?
 }
 
+/// Legacy backend history projection kept only as a compatibility adapter into
+/// `LocalArchiveRecord`. It is not the canonical client archive model.
 struct WritingItem: Codable, Identifiable {
     let id: String
     let content: String
@@ -408,7 +604,7 @@ struct WritingItem: Codable, Identifiable {
         id = try container.decodeFlexibleString(forKeys: ["id", "anky_id", "session_id"])
         content = try container.decodeFlexibleString(forKeys: ["content", "text"])
         durationSeconds = try container.decodeFlexibleDouble(forKeys: ["duration_seconds", "duration"], defaultValue: 0)
-        wordCount = try container.decodeFlexibleInt(forKeys: ["word_count"], defaultValue: LocalWritingCapture.wordCount(in: content))
+        wordCount = try container.decodeFlexibleInt(forKeys: ["word_count"], defaultValue: AnkyContract.Qualification.wordCount(in: content))
         isAnky = try container.decodeFlexibleBool(forKeys: ["is_anky"], defaultValue: false)
         response = try container.decodeFlexibleOptionalString(forKeys: ["response", "reflection", "anky_response", "anky_reflection"])
             ?? nestedAnky?.reflection
@@ -443,6 +639,8 @@ enum CachedWritingSyncState: String, Codable {
     case localOnly
 }
 
+/// Legacy cache read model kept for runtime stability until archive cutover.
+/// New contract work should prefer `LocalArchiveRecord`.
 struct CachedWritingEntry: Codable, Identifiable, Equatable {
     let id: String
     let prompt: String
@@ -495,29 +693,7 @@ struct CachedWritingEntry: Codable, Identifiable, Equatable {
     }
 
     var retryableAnkyCapture: LocalWritingCapture? {
-        guard isAnky else { return nil }
-
-        let trimmedSessionString = ankySessionString?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedFilePath = ankyFilePath?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedSessionHash = sessionHash?.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        guard (trimmedSessionString?.isEmpty == false) || (trimmedFilePath?.isEmpty == false) else {
-            return nil
-        }
-
-        return LocalWritingCapture(
-            sessionId: id,
-            prompt: prompt,
-            text: content,
-            duration: durationSeconds,
-            wordCount: wordCount,
-            keystrokeDeltas: [],
-            finishedAt: createdAt,
-            estimatedFlowScore: flowScore ?? 0,
-            ankySessionString: trimmedSessionString,
-            ankyFilePath: trimmedFilePath,
-            sessionHash: trimmedSessionHash
-        )
+        localArchiveRecord.retryableCapture
     }
 
     init(
@@ -563,8 +739,10 @@ struct CachedWritingEntry: Codable, Identifiable, Equatable {
     }
 
     init(item: WritingItem, prompt: String = "") {
-        let qualifiesForAnky = item.durationSeconds >= LocalWritingCapture.requiredDurationForAnky
-            && item.wordCount >= LocalWritingCapture.requiredWordCountForAnky
+        let qualifiesForAnky = AnkyContract.Qualification.qualifies(
+            durationSeconds: item.durationSeconds,
+            wordCount: item.wordCount
+        )
 
         self.init(
             id: item.id,
@@ -949,8 +1127,8 @@ private extension KeyedDecodingContainer where Key == DynamicCodingKeys {
 }
 
 struct LocalWritingCapture: Equatable {
-    static let requiredDurationForAnky: Double = 480
-    static let requiredWordCountForAnky = 300
+    static let requiredDurationForAnky: Double = AnkyContract.Qualification.minimumDurationSeconds
+    static let requiredWordCountForAnky = AnkyContract.Qualification.minimumWordCount
 
     let sessionId: String
     let prompt: String
@@ -1020,13 +1198,11 @@ struct LocalWritingCapture: Equatable {
     }
 
     static func qualifiesForAnky(text: String, duration: Double) -> Bool {
-        duration >= requiredDurationForAnky && wordCount(in: text) >= requiredWordCountForAnky
+        AnkyContract.Qualification.qualifies(text: text, durationSeconds: duration)
     }
 
     static func wordCount(in text: String) -> Int {
-        text
-            .split { $0.isWhitespace || $0.isNewline }
-            .count
+        AnkyContract.Qualification.wordCount(in: text)
     }
 }
 

@@ -103,6 +103,7 @@ final class AnkyAPI {
         try await get("/writings")
     }
 
+    /// Legacy `/swift/v2/write` submit path kept for compatibility with older surfaces.
     func submitWriting(_ request: MobileWriteRequest) async throws -> MobileWriteResponse {
         try await post("/write", body: request)
     }
@@ -284,8 +285,20 @@ final class AnkyAPI {
         )
     }
 
+    /// Legacy `/swift/v2/writing/{sessionId}/status` compatibility path.
+    /// Canonical runtime uses `/api/anky/sessions/{session_hash}` and `/proof`.
     func getWritingStatus(sessionId: String) async throws -> WritingStatusResponse {
         try await get("/writing/\(sessionId)/status")
+    }
+
+    func getCanonicalSessionSnapshot(sessionHash: String) async throws -> CanonicalProcessorStatusResponse {
+        let encodedHash = sessionHash.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionHash
+        return try await get("/api/anky/sessions/\(encodedHash)", baseURLOverride: webBaseURL)
+    }
+
+    func getCanonicalSessionProof(sessionHash: String) async throws -> CanonicalProofResponse {
+        let encodedHash = sessionHash.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? sessionHash
+        return try await get("/api/anky/sessions/\(encodedHash)/proof", baseURLOverride: webBaseURL)
     }
 
     func getPrompt(id: String) async throws -> PromptResponse {
@@ -534,12 +547,15 @@ final class AnkyAPI {
 
     // MARK: - Relay (.anky session protocol)
 
+    /// Legacy proof/archive path. The locked core proof contract is
+    /// `AnkyProofMetadata` on the session-bundle submit flow.
     func relaySession(_ request: RelayRequest) async throws -> RelayResponse {
         try await post("/api/v1/relay", body: request, requiresAuth: false, baseURLOverride: webBaseURL)
     }
 
     // MARK: - Sealed Sessions
 
+    /// Legacy non-canonical proof path kept for older surfaces.
     func sealSession(_ sealed: SealedSession) async throws -> SealSessionResponse {
         try await post("/api/sessions/seal", body: sealed, baseURLOverride: webBaseURL)
     }
@@ -558,6 +574,7 @@ final class AnkyAPI {
 
     /// Submit an encrypted writing session to the sealed-write endpoint.
     /// Uses a camelCase encoder since this endpoint expects camelCase JSON keys.
+    /// This is a legacy/non-canonical submit path.
     func submitSealedWrite(_ request: SealedWriteRequest) async throws -> SealedWriteResponse {
         let camelEncoder = JSONEncoder()
         let bodyData = try camelEncoder.encode(request)
@@ -778,6 +795,7 @@ final class AnkyAPI {
         capture: LocalWritingCapture,
         kingdom: Kingdom
     ) throws -> AnkySubmitRequest {
+        let sessionBundle = capture.canonicalSessionBundle
         let sessionData: Data
         if let ankyFilePath = capture.ankyFilePath, !ankyFilePath.isEmpty {
             sessionData = try Data(contentsOf: URL(fileURLWithPath: ankyFilePath))
@@ -792,7 +810,7 @@ final class AnkyAPI {
         }
 
         let sessionHash: String
-        if let existingHash = capture.sessionHash, !existingHash.isEmpty {
+        if let existingHash = sessionBundle.sessionHash, !existingHash.isEmpty {
             sessionHash = existingHash
         } else {
             sessionHash = AnkySessionFileStore.sha256Hex(of: sessionData)
@@ -801,14 +819,13 @@ final class AnkyAPI {
         let messageData = Data(hexString: sessionHash) ?? Data(sessionHash.utf8)
         let signature = try SeedIdentityManager.shared.sign(message: messageData)
         _ = try SeedIdentityManager.shared.solanaAddress()
-        let startedAt = AnkySessionFileStore.firstKeystrokeDate(from: session) ?? capture.finishedAt.addingTimeInterval(-capture.duration)
 
         return AnkySubmitRequest(
             sessionHash: sessionHash,
-            durationSeconds: max(Int(capture.duration.rounded()), 0),
-            wordCount: capture.wordCount,
+            durationSeconds: max(Int(sessionBundle.durationSeconds.rounded()), 0),
+            wordCount: sessionBundle.wordCount,
             kingdom: kingdom.sealingSlug,
-            startedAt: Self.submitDateFormatter.string(from: startedAt),
+            startedAt: Self.submitDateFormatter.string(from: sessionBundle.startedAt),
             walletSignature: Base58.encode(signature),
             session: session
         )

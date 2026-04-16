@@ -530,7 +530,7 @@ private struct WritingPhaseView: View {
 
     /// Map WritingFlowModel progress to 0-1
     private var sessionProgress: Double {
-        min(max(model.sessionElapsed / 480, 0), 1)
+        min(max(model.sessionElapsed / AnkyContract.Qualification.minimumDurationSeconds, 0), 1)
     }
 
     private var idleProgress: Double {

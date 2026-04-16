@@ -240,7 +240,7 @@ class ChatViewModel: ObservableObject {
     private var ankyPreviousTextCount: Int = 0
     private var firstKeystrokeEpochMs: Int64?
 
-    private let sessionGoal: TimeInterval = 480
+    private let sessionGoal: TimeInterval = AnkyContract.Qualification.minimumDurationSeconds
     private let idleWarningStart: TimeInterval = 3
     private let idleLimit: TimeInterval = 8
     private(set) var sessionStartedAt: Date?
@@ -1273,7 +1273,7 @@ struct AnkyChatView: View {
             viewModel.chatUnlocked = true
             viewModel.refreshConversationDayIfNeeded()
         }
-        .onChange(of: appState.writingHistory) { _, _ in
+        .onChange(of: appState.localArchiveRecords) { _, _ in
             viewModel.chatUnlocked = true
         }
         .onChange(of: appState.qrSealChallenge) { _, _ in
@@ -1297,12 +1297,14 @@ struct AnkyChatView: View {
         .task {
             if let pendingId = DailyPromptNotificationManager.pendingSessionId {
                 DailyPromptNotificationManager.clearPendingSession()
-                do {
-                    let status = try await AnkyAPI.shared.getWritingStatus(sessionId: pendingId)
-                    if let response = status.ankyResponse {
-                        viewModel.deliverAnkyResponse(response)
-                    }
-                } catch {}
+                if let record = await appState.reconcileCanonicalArchiveRecord(
+                    sessionId: pendingId,
+                    pollUntilSettled: false
+                ),
+                   let reflection = record.sessionBundle.reflection?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !reflection.isEmpty {
+                    viewModel.deliverAnkyResponse(reflection)
+                }
             }
         }
     }
@@ -1562,7 +1564,6 @@ struct AnkyChatView: View {
         var titleText: String?
         var fullReflection = ""
         var streamedImageURL: String?
-        var nextPrompt: String?
         var didPersistStoredSubmission = false
         var didDeliverReflectionToChat = false
         var didDeliverImageToChat = false
@@ -1586,6 +1587,25 @@ struct AnkyChatView: View {
             if let reflection = normalized(fullReflection) {
                 AnkyNameStore.updateFromReflection(reflection)
             }
+        }
+
+        func absorbArchiveRecord(
+            _ record: LocalArchiveRecord,
+            markComplete: Bool
+        ) async {
+            if let title = normalized(record.sessionBundle.title3Words) {
+                titleText = title
+            }
+            if let reflection = normalized(record.sessionBundle.reflection) {
+                fullReflection = reflection
+                viewModel.replaceSealingReflection(reflection)
+            }
+            if let imageLocator = normalized(record.sessionBundle.image?.canonicalLocator) {
+                streamedImageURL = imageLocator
+            }
+
+            persistArtifacts()
+            await deliverStreamedOutcomeIfPossible(markComplete: markComplete)
         }
 
         func deliverStreamedOutcomeIfPossible(markComplete: Bool) async {
@@ -1618,96 +1638,34 @@ struct AnkyChatView: View {
             guard !didPersistStoredSubmission else { return }
             didPersistStoredSubmission = true
 
-            let response = MobileWriteResponse(
-                ok: true,
-                sessionId: capture.sessionId,
-                outcome: "anky",
-                wordCount: capture.wordCount,
-                durationSeconds: capture.duration,
-                flowScore: capture.estimatedFlowScore,
-                persisted: true,
-                spawned: SpawnedArtifacts(
-                    ankyId: ankyId,
-                    feedback: nil,
-                    meditation: nil,
-                    breathwork: nil,
-                    cuentacuentos: nil
-                ),
-                walletAddress: nil,
-                statusUrl: nil,
-                ankyResponse: normalized(fullReflection),
-                nextPrompt: normalized(nextPrompt),
-                mood: nil,
-                error: nil
+            await appState.storeCanonicalAcceptedSubmission(
+                for: capture.sessionId,
+                backendAnkyId: ankyId
             )
-
-            await appState.applyPersistedAnkySuccess(capture: capture, response: response)
+            await DailyPromptNotificationManager.scheduleWithPrompt(appState.prompt)
+            DailyPromptNotificationManager.clearPendingSession()
             WritingFlowModel.autoMintCNFT(sessionId: capture.sessionId, appState: appState)
             WritingFlowModel.archiveToArweave(sessionId: capture.sessionId, text: capture.text)
         }
 
-        func pollForMissingArtifacts() async {
-            let needsReflection = normalized(fullReflection) == nil
-            let needsTitle = normalized(titleText) == nil
-            let needsImage = normalized(streamedImageURL) == nil
-            let needsPrompt = normalized(nextPrompt) == nil
-
-            guard needsReflection || needsTitle || needsImage || needsPrompt else { return }
-
-            var retryDelay: UInt64 = 1_500_000_000
-            for attempt in 0..<20 {
-                try? await Task.sleep(nanoseconds: retryDelay)
-
-                do {
-                    let status = try await AnkyAPI.shared.getWritingStatus(sessionId: capture.sessionId)
-
-                    if needsReflection, let reflection = normalized(status.ankyResponse ?? status.anky?.reflection) {
-                        fullReflection = reflection
-                    }
-                    if needsTitle, let title = normalized(status.anky?.title) {
-                        titleText = title
-                    }
-                    if needsImage, let imageURL = normalized(status.anky?.imageUrl) {
-                        streamedImageURL = imageURL
-                    }
-                    if needsPrompt, let prompt = normalized(status.nextPrompt) {
-                        nextPrompt = prompt
-                    }
-
-                    persistArtifacts()
-
-                    let stillNeedsReflection = needsReflection && normalized(fullReflection) == nil
-                    let stillNeedsTitle = needsTitle && normalized(titleText) == nil
-                    let stillNeedsImage = needsImage && normalized(streamedImageURL) == nil
-                    let stillNeedsPrompt = needsPrompt && normalized(nextPrompt) == nil
-                    if !stillNeedsReflection && !stillNeedsTitle && !stillNeedsImage && !stillNeedsPrompt {
-                        break
-                    }
-                } catch let error as AnkyError where error.isConnectivityIssue {
-                    retryDelay = min(retryDelay * 2, 8_000_000_000)
-                    if attempt > 10 { break }
-                } catch {
-                    break
-                }
+        func reconcileCanonicalArchive(
+            pollUntilSettled: Bool,
+            markComplete: Bool
+        ) async {
+            guard let updated = await appState.reconcileCanonicalArchiveRecord(
+                sessionId: capture.sessionId,
+                pollUntilSettled: pollUntilSettled
+            ) else {
+                return
             }
+
+            await absorbArchiveRecord(updated, markComplete: markComplete)
         }
 
         func finalizeSuccessfulSubmission(with ankyId: String) async {
             acceptedAnkyId = ankyId
-            await pollForMissingArtifacts()
             await persistStoredSubmissionIfNeeded(ankyId: ankyId)
-
-            if normalized(fullReflection) == nil {
-                fullReflection = "i heard you. every word, every pause between them. sit with what came through — it knows more than you think."
-            }
-
-            persistArtifacts()
-            await deliverStreamedOutcomeIfPossible(markComplete: true)
-
-            if let prompt = normalized(nextPrompt) {
-                await DailyPromptNotificationManager.scheduleWithPrompt(prompt)
-            }
-            DailyPromptNotificationManager.clearPendingSession()
+            await reconcileCanonicalArchive(pollUntilSettled: true, markComplete: true)
         }
 
         do {
@@ -1716,6 +1674,7 @@ struct AnkyChatView: View {
                 case .accepted(let ankyId):
                     acceptedAnkyId = ankyId
                     viewModel.markSealingAccepted(ankyId: ankyId)
+                    await persistStoredSubmissionIfNeeded(ankyId: ankyId)
 
                 case .title(let title):
                     titleText = title
@@ -1772,14 +1731,7 @@ struct AnkyChatView: View {
                 return
             }
 
-            await pollForMissingArtifacts()
-            persistArtifacts()
-
-            if normalized(fullReflection) == nil {
-                fullReflection = "i heard you. the words are safe. something in what you wrote is trying to reach you — let it."
-                persistArtifacts()
-            }
-
+            await reconcileCanonicalArchive(pollUntilSettled: false, markComplete: true)
             await deliverStreamedOutcomeIfPossible(markComplete: true)
         } catch {
             if let ankyId = acceptedAnkyId ?? viewModel.sealingAnkyId {
@@ -1787,14 +1739,7 @@ struct AnkyChatView: View {
                 return
             }
 
-            await pollForMissingArtifacts()
-            persistArtifacts()
-
-            if normalized(fullReflection) == nil {
-                fullReflection = "i heard you. the words are safe. something in what you wrote is trying to reach you — let it."
-                persistArtifacts()
-            }
-
+            await reconcileCanonicalArchive(pollUntilSettled: false, markComplete: true)
             await deliverStreamedOutcomeIfPossible(markComplete: true)
         }
     }
@@ -1951,9 +1896,9 @@ struct DrawerOverlay: View {
     }
 
     private var ankySessions: [CachedWritingEntry] {
-        appState.writingHistory
-            .filter { $0.isAnky }
+        appState.canonicalArchiveAnkys
             .sorted { $0.createdAt > $1.createdAt }
+            .map(\.legacyCachedWritingEntry)
     }
 
     var body: some View {
@@ -2110,7 +2055,7 @@ struct AnkyModeView: View {
     @State private var showMilestoneOverlay = false
     @State private var milestoneTask: Task<Void, Never>?
     private let tick = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
-    private let sessionGoal: TimeInterval = 480
+    private let sessionGoal: TimeInterval = AnkyContract.Qualification.minimumDurationSeconds
 
     private var hasStartedWriting: Bool {
         viewModel.sessionStartedAt != nil || !viewModel.sessionText.isEmpty
@@ -3853,9 +3798,9 @@ struct ProfileSheetView: View {
                             Divider().overlay(Color.white.opacity(0.08))
                             statRow("Ankys", "\(user.totalAnkys)")
                             Divider().overlay(Color.white.opacity(0.08))
-                            statRow("Local", "\(appState.writingHistory.count)")
+                            statRow("Local", "\(appState.localArchiveRecords.count)")
                         } else {
-                            statRow("Sessions", "\(appState.writingHistory.count)")
+                            statRow("Sessions", "\(appState.localArchiveRecords.count)")
                         }
                     }
                     .background(Color(hex: "1c1c1e"))

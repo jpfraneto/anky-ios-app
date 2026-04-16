@@ -8,6 +8,7 @@ enum SessionPhase: String, Codable {
     case broken
 }
 
+/// Legacy pre-session-bundle model shared with older surfaces.
 struct AnkySession: Codable, Identifiable {
     var id: UUID = UUID()
     var startTime: Date = Date()

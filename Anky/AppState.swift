@@ -62,7 +62,10 @@ final class AppState: ObservableObject {
     @Published var currentTab: Tab = .write
     @Published var activeExperience: ActiveExperience?
     @Published var prompt: String = PromptLibrary.currentPrompt()
-    @Published var writingHistory: [CachedWritingEntry] = WritingCacheStore.load()
+    /// Canonical local-first archive state.
+    @Published private(set) var localArchiveRecords: [LocalArchiveRecord]
+    /// Legacy UI projection kept while profile/history surfaces still read `CachedWritingEntry`.
+    @Published var writingHistory: [CachedWritingEntry]
     @Published var isOfflineMode = false
     @Published var authError: String?
     @Published var syncMessage: String?
@@ -90,6 +93,12 @@ final class AppState: ObservableObject {
         let ti = UserDefaults.standard.double(forKey: firstSessionTimestampKey)
         return ti > 0 ? Date(timeIntervalSince1970: ti) : nil
     }()
+
+    init() {
+        let initialArchiveRecords = LocalArchiveStore.load()
+        self.localArchiveRecords = initialArchiveRecords
+        self.writingHistory = initialArchiveRecords.map(\.legacyCachedWritingEntry)
+    }
 
     func setMirrorState(_ state: MirrorState) {
         mirrorState = state
@@ -141,8 +150,8 @@ final class AppState: ObservableObject {
         let now = Date()
         var utc = Calendar(identifier: .gregorian)
         utc.timeZone = TimeZone(identifier: "UTC")!
-        return writingHistory.contains { entry in
-            utc.isDate(entry.createdAt, inSameDayAs: now)
+        return localArchiveRecords.contains { record in
+            utc.isDate(record.createdAt, inSameDayAs: now)
         }
     }
 
@@ -151,8 +160,9 @@ final class AppState: ObservableObject {
         let now = Date()
         var utc = Calendar(identifier: .gregorian)
         utc.timeZone = TimeZone(identifier: "UTC")!
-        return writingHistory.contains { entry in
-            entry.isAnky && utc.isDate(entry.createdAt, inSameDayAs: now)
+        return localArchiveRecords.contains { record in
+            (record.isAnky ?? record.sessionBundle.qualifiesForCanonicalAnky)
+                && utc.isDate(record.createdAt, inSameDayAs: now)
         }
     }
 
@@ -161,24 +171,47 @@ final class AppState: ObservableObject {
         let now = Date()
         var utc = Calendar(identifier: .gregorian)
         utc.timeZone = TimeZone(identifier: "UTC")!
-        return writingHistory.first { entry in
-            utc.isDate(entry.createdAt, inSameDayAs: now)
+        return localArchiveRecords.first { record in
+            utc.isDate(record.createdAt, inSameDayAs: now)
+        }?.legacyCachedWritingEntry
+    }
+
+    var canonicalArchiveAnkys: [LocalArchiveRecord] {
+        localArchiveRecords.filter { record in
+            record.isAnky ?? record.sessionBundle.qualifiesForCanonicalAnky
         }
     }
 
     var cloudHistory: [CachedWritingEntry] {
-        writingHistory.filter { $0.syncState == .synced }
+        localArchiveRecords
+            .filter { $0.sessionBundle.syncStatus == .synced || $0.sessionBundle.syncStatus == .legacyRemoteProjection }
+            .map(\.legacyCachedWritingEntry)
     }
 
     var pendingPersistedWrites: [CachedWritingEntry] {
-        writingHistory.filter { $0.syncState == .pending && $0.isAnky }
+        pendingArchiveRecords.map(\.legacyCachedWritingEntry)
+    }
+
+    var pendingArchiveRecords: [LocalArchiveRecord] {
+        localArchiveRecords.filter {
+            $0.sessionBundle.qualifiesForCanonicalAnky
+                && ($0.sessionBundle.syncStatus == .pending || $0.needsCanonicalProcessorReconciliation)
+        }
+    }
+
+    func archiveRecord(for sessionId: String) -> LocalArchiveRecord? {
+        localArchiveRecords.first { $0.id == sessionId }
+    }
+
+    func archiveRecord(forSessionHash sessionHash: String) -> LocalArchiveRecord? {
+        localArchiveRecords.first { $0.sessionBundle.sessionHash == sessionHash }
     }
 
     func bootstrap() async {
         guard !didBootstrap else { return }
         didBootstrap = true
         prompt = PromptLibrary.currentPrompt()
-        writingHistory = WritingCacheStore.migrateLegacyShortPendingWrites()
+        replaceArchiveRecords(LocalArchiveStore.migrateLegacyShortPendingWrites())
         hasInProgressWriting = WritingSessionStore.hasDraft() || WritingSessionStore.hasRecoverableLiveSession()
         hasUnlockedFullExperience = UserDefaults.standard.bool(forKey: Self.unlockStateKey)
         hasCompletedWelcome = UserDefaults.standard.bool(forKey: Self.welcomeStateKey)
@@ -344,6 +377,28 @@ final class AppState: ObservableObject {
         }
     }
 
+    func storeCanonicalAcceptedSubmission(
+        for sessionId: String,
+        backendAnkyId: String,
+        shouldRouteToUnlocked: Bool = false,
+        shouldSwitchToStories: Bool = false
+    ) async {
+        replaceArchiveRecords(
+            LocalArchiveStore.updateAcceptedSubmission(
+                for: sessionId,
+                backendAnkyId: backendAnkyId
+            )
+        )
+        markUnlocked()
+        await refreshUserProfile()
+        if shouldRouteToUnlocked, route != .welcome {
+            if shouldSwitchToStories {
+                currentTab = .stories
+            }
+            route = .unlocked
+        }
+    }
+
     func clearSession() async {
         DeviceTokenManager.shared.unregister()
         await SeedAuthService.shared.logout()
@@ -369,6 +424,7 @@ final class AppState: ObservableObject {
 
         user = nil
         prompt = PromptLibrary.currentPrompt()
+        localArchiveRecords = []
         writingHistory = []
         currentTab = .write
         activeExperience = nil
@@ -414,7 +470,8 @@ final class AppState: ObservableObject {
 
         do {
             let items = try await AnkyAPI.shared.writings()
-            writingHistory = WritingCacheStore.mergeRemote(items)
+            replaceArchiveRecords(LocalArchiveStore.mergeRemote(items))
+            await refreshCanonicalArchiveReadback()
         } catch let error as AnkyError where error.isConnectivityIssue {
             isOfflineMode = true
         } catch {
@@ -445,33 +502,31 @@ final class AppState: ObservableObject {
             && response?.isAnky == true
             && capture.qualifiesForAnky
         let isPendingAnky = syncState == .pending && capture.qualifiesForAnky
-        let isAnky = isPersistedAnky || isPendingAnky
-        let entry = CachedWritingEntry(
-            id: capture.sessionId,
-            prompt: capture.prompt,
-            content: capture.text,
-            durationSeconds: capture.duration,
-            wordCount: response?.wordCount ?? capture.wordCount,
-            isAnky: isAnky,
-            response: reflectionText ?? response?.ankyResponse,
-            ankyId: response?.ankyId,
-            ankyTitle: isPersistedAnky ? "An anky was born." : nil,
-            ankyImagePath: nil,
-            createdAt: capture.finishedAt,
-            flowScore: response?.flowScore ?? capture.estimatedFlowScore,
-            syncState: syncState,
-            ankySessionString: capture.ankySessionString,
-            ankyFilePath: capture.ankyFilePath,
-            sessionHash: capture.sessionHash
-        )
+        let canonicalSyncStatus: AnkySessionBundle.SyncStatus = {
+            if isPersistedAnky {
+                return .synced
+            }
+            if isPendingAnky {
+                return .pending
+            }
+            return syncState.canonicalSyncStatus
+        }()
 
-        writingHistory = WritingCacheStore.prepend(entry)
+        let archiveRecord = capture.localArchiveRecord(
+            syncStatus: canonicalSyncStatus,
+            backendAnkyId: response?.ankyId,
+            reflection: reflectionText ?? response?.ankyResponse
+        )
+        .updating(flowScore: response?.flowScore ?? capture.estimatedFlowScore)
+        .reconcilingCanonicalSyncStatus(updatedAt: .now)
+
+        replaceArchiveRecords(LocalArchiveStore.prepend(archiveRecord))
         prompt = PromptLibrary.advancePrompt(seed: capture.text)
         hasInProgressWriting = WritingSessionStore.hasDraft() || WritingSessionStore.hasRecoverableLiveSession()
     }
 
     func storeReflection(_ reflection: String, for sessionId: String) {
-        writingHistory = WritingCacheStore.updateResponse(for: sessionId, response: reflection)
+        replaceArchiveRecords(LocalArchiveStore.updateResponse(for: sessionId, response: reflection))
     }
 
     func storeGeneratedArtifacts(
@@ -480,12 +535,12 @@ final class AppState: ObservableObject {
         ankyTitle: String? = nil,
         ankyImagePath: String? = nil
     ) {
-        writingHistory = WritingCacheStore.updateGeneratedArtifacts(
+        replaceArchiveRecords(LocalArchiveStore.updateGeneratedArtifacts(
             for: sessionId,
-            response: reflection,
+            reflection: reflection,
             ankyTitle: ankyTitle,
             ankyImagePath: ankyImagePath
-        )
+        ))
     }
 
     func storeRetryArtifacts(
@@ -494,16 +549,106 @@ final class AppState: ObservableObject {
         ankyFilePath: String? = nil,
         sessionHash: String? = nil
     ) {
-        writingHistory = WritingCacheStore.updateRetryArtifacts(
+        replaceArchiveRecords(LocalArchiveStore.updateRetryArtifacts(
             for: sessionId,
             ankySessionString: ankySessionString,
             ankyFilePath: ankyFilePath,
             sessionHash: sessionHash
-        )
+        ))
     }
 
     func updateWritingSyncState(for sessionId: String, syncState: CachedWritingSyncState) {
-        writingHistory = WritingCacheStore.updateSyncState(for: sessionId, syncState: syncState)
+        replaceArchiveRecords(
+            LocalArchiveStore.updateSyncStatus(
+                for: sessionId,
+                syncStatus: syncState.canonicalSyncStatus
+            )
+        )
+    }
+
+    func applyCanonicalProcessorStatus(
+        _ response: CanonicalProcessorStatusResponse,
+        sessionId: String? = nil,
+        sessionHash: String
+    ) {
+        replaceArchiveRecords(
+            LocalArchiveStore.applyCanonicalProcessorStatus(
+                for: sessionId,
+                sessionHash: sessionHash,
+                response: response
+            )
+        )
+    }
+
+    func applyCanonicalProofReadback(
+        _ response: CanonicalProofResponse,
+        sessionId: String? = nil,
+        sessionHash: String
+    ) {
+        replaceArchiveRecords(
+            LocalArchiveStore.applyCanonicalProofReadback(
+                for: sessionId,
+                sessionHash: sessionHash,
+                response: response
+            )
+        )
+    }
+
+    func reconcileCanonicalArchiveRecord(
+        sessionId: String,
+        pollUntilSettled: Bool = false,
+        maxAttempts: Int = 12
+    ) async -> LocalArchiveRecord? {
+        guard let initialRecord = archiveRecord(for: sessionId) else {
+            return nil
+        }
+
+        var latestRecord: LocalArchiveRecord? = initialRecord
+        var retryDelay: UInt64 = 1_500_000_000
+        let attempts = max(maxAttempts, 1)
+
+        for attempt in 0..<attempts {
+            if let currentRecord = latestRecord {
+                latestRecord = await refreshCanonicalArchiveRecord(currentRecord)
+            }
+
+            guard pollUntilSettled else {
+                return latestRecord
+            }
+
+            if latestRecord?.needsCanonicalProcessorReconciliation != true {
+                return latestRecord
+            }
+
+            if attempt < attempts - 1 {
+                try? await Task.sleep(nanoseconds: retryDelay)
+                retryDelay = min(retryDelay * 2, 8_000_000_000)
+                latestRecord = archiveRecord(for: sessionId)
+            }
+        }
+
+        return latestRecord
+    }
+
+    func hydrateCanonicalArchiveRecordIfAvailable(sessionId: String) async -> LocalArchiveRecord? {
+        guard let record = archiveRecord(for: sessionId),
+              let sessionHash = record.sessionBundle.sessionHash,
+              !sessionHash.isEmpty else {
+            return nil
+        }
+
+        do {
+            let snapshot = try await AnkyAPI.shared.getCanonicalSessionSnapshot(sessionHash: sessionHash)
+            applyCanonicalProcessorStatus(snapshot, sessionId: record.id, sessionHash: sessionHash)
+
+            if let proof = try? await AnkyAPI.shared.getCanonicalSessionProof(sessionHash: sessionHash) {
+                applyCanonicalProofReadback(proof, sessionId: record.id, sessionHash: sessionHash)
+            }
+
+            return archiveRecord(for: record.id)
+        } catch {
+            return nil
+        }
     }
 
     func queueWrite(_ capture: LocalWritingCapture) async {
@@ -575,6 +720,40 @@ final class AppState: ObservableObject {
     /// Public variant for mirror dissolve view to call
     func markUnlockedPublic() {
         markUnlocked()
+    }
+
+    private func replaceArchiveRecords(_ records: [LocalArchiveRecord]) {
+        localArchiveRecords = records
+        writingHistory = records.map(\.legacyCachedWritingEntry)
+    }
+
+    private func refreshCanonicalArchiveReadback() async {
+        let recordsToRefresh = localArchiveRecords.filter(\.needsCanonicalProcessorReconciliation)
+        for record in recordsToRefresh {
+            _ = await refreshCanonicalArchiveRecord(record)
+        }
+    }
+
+    private func refreshCanonicalArchiveRecord(_ record: LocalArchiveRecord) async -> LocalArchiveRecord? {
+        guard let sessionHash = record.sessionBundle.sessionHash,
+              !sessionHash.isEmpty else {
+            return nil
+        }
+
+        do {
+            let snapshot = try await AnkyAPI.shared.getCanonicalSessionSnapshot(sessionHash: sessionHash)
+            applyCanonicalProcessorStatus(snapshot, sessionId: record.id, sessionHash: sessionHash)
+
+            if let proof = try? await AnkyAPI.shared.getCanonicalSessionProof(sessionHash: sessionHash) {
+                applyCanonicalProofReadback(proof, sessionId: record.id, sessionHash: sessionHash)
+            }
+
+            return archiveRecord(for: record.id)
+        } catch let error as AnkyError where error.isConnectivityIssue {
+            return archiveRecord(for: record.id)
+        } catch {
+            return archiveRecord(for: record.id)
+        }
     }
 
     private func markUnlocked() {

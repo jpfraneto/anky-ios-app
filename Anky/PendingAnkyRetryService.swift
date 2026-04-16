@@ -44,7 +44,7 @@ enum PendingAnkyRetryError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingRetryPayload:
-            return "this device no longer has the canonical .anky session needed to resend this anky safely."
+            return "this device no longer has the canonical local session bundle needed to resend this anky safely."
         }
     }
 }
@@ -53,11 +53,11 @@ enum PendingAnkyRetryError: LocalizedError {
 enum PendingAnkyRetryService {
     static func retryPendingEntries(appState: AppState) async -> PendingAnkyRetrySweepSummary {
         var summary = PendingAnkyRetrySweepSummary()
-        let entries = appState.pendingPersistedWrites.sorted { $0.createdAt < $1.createdAt }
+        let records = appState.pendingArchiveRecords.sorted { $0.createdAt < $1.createdAt }
 
-        for entry in entries {
+        for record in records {
             do {
-                switch try await retry(entry: entry, appState: appState) {
+                switch try await retry(record: record, appState: appState) {
                 case .synced:
                     summary.syncedCount += 1
                 case .alreadyRunning:
@@ -67,19 +67,28 @@ enum PendingAnkyRetryService {
                 }
             } catch {
                 summary.failedCount += 1
-                print("[PendingAnkyRetry] Failed \(entry.id): \(error.localizedDescription)")
+                print("[PendingAnkyRetry] Failed \(record.id): \(error.localizedDescription)")
             }
         }
 
         return summary
     }
 
+    /// Legacy UI adapter until archive/profile surfaces cut over from `CachedWritingEntry`.
     static func retry(entry: CachedWritingEntry, appState: AppState) async throws -> PendingAnkyRetryResult {
-        guard entry.isAnky, entry.syncState != .synced else {
+        try await retry(record: entry.localArchiveRecord, appState: appState)
+    }
+
+    static func retry(record: LocalArchiveRecord, appState: AppState) async throws -> PendingAnkyRetryResult {
+        guard record.sessionBundle.qualifiesForCanonicalAnky else {
             return .synced
         }
 
-        let capture = try resolveCapture(for: entry, appState: appState)
+        guard !record.isCanonicallySealed else {
+            return .synced
+        }
+
+        let capture = try resolveCapture(for: record, appState: appState)
 
         guard await PendingAnkyRetryGate.shared.claim(sessionId: capture.sessionId) else {
             return .alreadyRunning
@@ -96,23 +105,29 @@ enum PendingAnkyRetryService {
 
         appState.updateWritingSyncState(for: capture.sessionId, syncState: .pending)
 
-        if let status = try? await hydrateFromStatus(capture: capture, appState: appState),
-           let existingAnkyId = normalized(status.anky?.id) {
-            await persistStoredSubmission(
-                ankyId: existingAnkyId,
-                capture: capture,
-                reflection: status.ankyResponse ?? status.anky?.reflection,
-                nextPrompt: status.nextPrompt,
-                appState: appState
-            )
-            return .synced
+        if let hydratedRecord = await hydrateFromCanonicalReadback(
+            sessionId: capture.sessionId,
+            appState: appState
+        ) {
+            if let existingAnkyId = normalized(hydratedRecord.backendAnkyId) {
+                await persistStoredSubmission(
+                    ankyId: existingAnkyId,
+                    capture: capture,
+                    appState: appState
+                )
+            }
+
+            if hydratedRecord.isCanonicallySealed {
+                return .synced
+            }
+
+            return .pending(message: pendingMessage(for: hydratedRecord))
         }
 
         var acceptedAnkyId: String?
-        var titleText = normalized(entry.ankyTitle)
-        var fullReflection = normalized(entry.response) ?? ""
-        var streamedImageURL = normalized(entry.ankyImagePath)
-        var nextPrompt: String?
+        var titleText = normalized(record.sessionBundle.title3Words)
+        var fullReflection = normalized(record.sessionBundle.reflection) ?? ""
+        var streamedImageURL = normalized(record.sessionBundle.image?.canonicalLocator)
         var didPersistStoredSubmission = false
 
         func persistArtifacts() {
@@ -124,84 +139,54 @@ enum PendingAnkyRetryService {
             )
         }
 
+        func absorbArchiveRecord(_ updatedRecord: LocalArchiveRecord) {
+            if let title = normalized(updatedRecord.sessionBundle.title3Words) {
+                titleText = title
+            }
+            if let reflection = normalized(updatedRecord.sessionBundle.reflection) {
+                fullReflection = reflection
+            }
+            if let imageLocator = normalized(updatedRecord.sessionBundle.image?.canonicalLocator) {
+                streamedImageURL = imageLocator
+            }
+            persistArtifacts()
+        }
+
         func persistStoredSubmissionIfNeeded(ankyId: String) async {
             guard !didPersistStoredSubmission else { return }
             didPersistStoredSubmission = true
             await persistStoredSubmission(
                 ankyId: ankyId,
                 capture: capture,
-                reflection: normalized(fullReflection),
-                nextPrompt: normalized(nextPrompt),
                 appState: appState
             )
         }
 
-        func pollForMissingArtifacts() async {
-            let needsAnkyID = normalized(acceptedAnkyId) == nil
-            let needsReflection = normalized(fullReflection) == nil
-            let needsTitle = normalized(titleText) == nil
-            let needsImage = normalized(streamedImageURL) == nil
-            let needsPrompt = normalized(nextPrompt) == nil
-
-            guard needsAnkyID || needsReflection || needsTitle || needsImage || needsPrompt else { return }
-
-            var retryDelay: UInt64 = 1_500_000_000
-            for attempt in 0..<20 {
-                try? await Task.sleep(nanoseconds: retryDelay)
-
-                do {
-                    let status = try await AnkyAPI.shared.getWritingStatus(sessionId: capture.sessionId)
-                    if needsAnkyID, let ankyId = normalized(status.anky?.id) {
-                        acceptedAnkyId = ankyId
-                    }
-                    if needsReflection, let reflection = normalized(status.ankyResponse ?? status.anky?.reflection) {
-                        fullReflection = reflection
-                    }
-                    if needsTitle, let title = normalized(status.anky?.title) {
-                        titleText = title
-                    }
-                    if needsImage, let imageURL = normalized(status.anky?.imageUrl) {
-                        streamedImageURL = imageURL
-                    }
-                    if needsPrompt, let prompt = normalized(status.nextPrompt) {
-                        nextPrompt = prompt
-                    }
-
-                    persistArtifacts()
-
-                    let stillNeedsAnkyID = needsAnkyID && normalized(acceptedAnkyId) == nil
-                    let stillNeedsReflection = needsReflection && normalized(fullReflection) == nil
-                    let stillNeedsTitle = needsTitle && normalized(titleText) == nil
-                    let stillNeedsImage = needsImage && normalized(streamedImageURL) == nil
-                    let stillNeedsPrompt = needsPrompt && normalized(nextPrompt) == nil
-                    if !stillNeedsAnkyID && !stillNeedsReflection && !stillNeedsTitle && !stillNeedsImage && !stillNeedsPrompt {
-                        break
-                    }
-                } catch let error as AnkyError where error.isConnectivityIssue {
-                    retryDelay = min(retryDelay * 2, 8_000_000_000)
-                    if attempt > 10 { break }
-                } catch {
-                    break
-                }
+        func reconcileCanonicalArchive(pollUntilSettled: Bool) async -> LocalArchiveRecord? {
+            guard let updatedRecord = await appState.reconcileCanonicalArchiveRecord(
+                sessionId: capture.sessionId,
+                pollUntilSettled: pollUntilSettled
+            ) else {
+                return nil
             }
+
+            acceptedAnkyId = normalized(updatedRecord.backendAnkyId) ?? acceptedAnkyId
+            absorbArchiveRecord(updatedRecord)
+            return updatedRecord
         }
 
         func finalizeIfPossible() async -> PendingAnkyRetryResult {
-            await pollForMissingArtifacts()
-            persistArtifacts()
+            let updatedRecord = await reconcileCanonicalArchive(pollUntilSettled: true)
 
-            if let ankyId = normalized(acceptedAnkyId) {
+            if let ankyId = normalized(updatedRecord?.backendAnkyId) ?? normalized(acceptedAnkyId) {
                 await persistStoredSubmissionIfNeeded(ankyId: ankyId)
-                if let prompt = normalized(nextPrompt) {
-                    await DailyPromptNotificationManager.scheduleWithPrompt(prompt)
-                }
-                DailyPromptNotificationManager.clearPendingSession()
+            }
+
+            if updatedRecord?.isCanonicallySealed == true {
                 return .synced
             }
 
-            return .pending(
-                message: "the anky is still saved locally, but the backend has not confirmed processing yet. try this button again later."
-            )
+            return .pending(message: pendingMessage(for: updatedRecord ?? record))
         }
 
         do {
@@ -209,6 +194,7 @@ enum PendingAnkyRetryService {
                 switch event {
                 case .accepted(let ankyId):
                     acceptedAnkyId = ankyId
+                    await persistStoredSubmissionIfNeeded(ankyId: ankyId)
 
                 case .title(let title):
                     titleText = title
@@ -231,19 +217,14 @@ enum PendingAnkyRetryService {
                 case .done(let ankyId):
                     acceptedAnkyId = ankyId
                     persistArtifacts()
-                    await persistStoredSubmissionIfNeeded(ankyId: ankyId)
-                    if let prompt = normalized(nextPrompt) {
-                        await DailyPromptNotificationManager.scheduleWithPrompt(prompt)
-                    }
-                    DailyPromptNotificationManager.clearPendingSession()
-                    return .synced
+                    return await finalizeIfPossible()
 
                 case .error(let stage, _):
                     if (stage == "solana" || stage == "image"),
                        let ankyId = normalized(acceptedAnkyId) {
                         persistArtifacts()
                         await persistStoredSubmissionIfNeeded(ankyId: ankyId)
-                        return .synced
+                        return await finalizeIfPossible()
                     }
 
                     return await finalizeIfPossible()
@@ -259,30 +240,33 @@ enum PendingAnkyRetryService {
     }
 
     private static func resolveCapture(
-        for entry: CachedWritingEntry,
+        for record: LocalArchiveRecord,
         appState: AppState
     ) throws -> LocalWritingCapture {
-        if let capture = entry.retryableAnkyCapture {
+        if let capture = record.retryableCapture {
             return capture
         }
 
-        if let artifact = AnkySessionFileStore.recoverStoredSession(matching: entry.content, around: entry.createdAt) {
+        if let artifact = AnkySessionFileStore.recoverStoredSession(
+            matching: record.sessionBundle.writingPlaintext,
+            around: record.createdAt
+        ) {
             appState.storeRetryArtifacts(
-                for: entry.id,
+                for: record.id,
                 ankySessionString: artifact.sessionString,
                 ankyFilePath: artifact.fileURL.path,
                 sessionHash: artifact.sessionHash
             )
 
             return LocalWritingCapture(
-                sessionId: entry.id,
-                prompt: entry.prompt,
-                text: entry.content,
-                duration: entry.durationSeconds,
-                wordCount: entry.wordCount,
+                sessionId: record.id,
+                prompt: record.prompt ?? "",
+                text: record.sessionBundle.writingPlaintext,
+                duration: record.sessionBundle.durationSeconds,
+                wordCount: record.sessionBundle.wordCount,
                 keystrokeDeltas: [],
-                finishedAt: entry.createdAt,
-                estimatedFlowScore: entry.flowScore ?? 0,
+                finishedAt: record.createdAt,
+                estimatedFlowScore: record.flowScore ?? 0,
                 ankySessionString: artifact.sessionString,
                 ankyFilePath: artifact.fileURL.path,
                 sessionHash: artifact.sessionHash
@@ -292,58 +276,38 @@ enum PendingAnkyRetryService {
         throw PendingAnkyRetryError.missingRetryPayload
     }
 
-    private static func hydrateFromStatus(
-        capture: LocalWritingCapture,
+    private static func hydrateFromCanonicalReadback(
+        sessionId: String,
         appState: AppState
-    ) async throws -> WritingStatusResponse {
-        let status = try await AnkyAPI.shared.getWritingStatus(sessionId: capture.sessionId)
-        appState.storeGeneratedArtifacts(
-            for: capture.sessionId,
-            reflection: normalized(status.ankyResponse ?? status.anky?.reflection),
-            ankyTitle: normalized(status.anky?.title),
-            ankyImagePath: normalized(status.anky?.imageUrl)
-        )
-        return status
+    ) async -> LocalArchiveRecord? {
+        await appState.hydrateCanonicalArchiveRecordIfAvailable(sessionId: sessionId)
     }
 
     private static func persistStoredSubmission(
         ankyId: String,
         capture: LocalWritingCapture,
-        reflection: String?,
-        nextPrompt: String?,
         appState: AppState
     ) async {
-        let response = MobileWriteResponse(
-            ok: true,
-            sessionId: capture.sessionId,
-            outcome: "anky",
-            wordCount: capture.wordCount,
-            durationSeconds: capture.duration,
-            flowScore: capture.estimatedFlowScore,
-            persisted: true,
-            spawned: SpawnedArtifacts(
-                ankyId: ankyId,
-                feedback: nil,
-                meditation: nil,
-                breathwork: nil,
-                cuentacuentos: nil
-            ),
-            walletAddress: nil,
-            statusUrl: nil,
-            ankyResponse: normalized(reflection),
-            nextPrompt: normalized(nextPrompt),
-            mood: nil,
-            error: nil
-        )
-
-        await appState.applyPersistedAnkySuccess(
-            capture: capture,
-            response: response,
+        await appState.storeCanonicalAcceptedSubmission(
+            for: capture.sessionId,
+            backendAnkyId: ankyId,
             shouldRouteToUnlocked: false,
             shouldSwitchToStories: false
         )
+        await DailyPromptNotificationManager.scheduleWithPrompt(appState.prompt)
+        DailyPromptNotificationManager.clearPendingSession()
         WritingFlowModel.autoMintCNFT(sessionId: capture.sessionId, appState: appState)
         WritingFlowModel.archiveToArweave(sessionId: capture.sessionId, text: capture.text)
+    }
+
+    private static func pendingMessage(for record: LocalArchiveRecord) -> String {
+        let missing = record.artifactCompleteness.missingArtifacts.map(\.rawValue)
+        guard !missing.isEmpty else {
+            return "the backend already has this session hash. the local archive will keep checking the canonical snapshot and proof until it settles."
+        }
+
+        let joinedMissing = missing.joined(separator: ", ")
+        return "the backend already has this session hash, but \(joinedMissing) is still pending in the canonical processor readback."
     }
 
     private static func normalized(_ text: String?) -> String? {

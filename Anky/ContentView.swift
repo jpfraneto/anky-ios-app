@@ -382,7 +382,7 @@ struct ActiveWritingSessionView: View {
     var onSessionComplete: ((LocalWritingCapture) -> Void)?
 
     private let tick = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
-    private let sessionGoal: TimeInterval = 480
+    private let sessionGoal: TimeInterval = AnkyContract.Qualification.minimumDurationSeconds
 
     var body: some View {
         GeometryReader { geometry in

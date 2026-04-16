@@ -1,5 +1,8 @@
 # 012 Sealing Screen And SSE Submit Flow
 
+Note as of April 16, 2026:
+This lesson is still useful for the sealing-screen mental model, but the current canonical runtime no longer finishes Ankys through legacy status polling. Read `025_runtime_cutover_local_archive_first.md` for the live session-hash snapshot/proof reconciliation path.
+
 This lesson explains the new path that happens after a writing session ends in the active chat-first app shell.
 
 The short version:

@@ -10,6 +10,62 @@ This file tracks meaningful work on the Anky iOS app.
 - Prefer `Added`, `Changed`, `Fixed`, and `Verified`.
 - Reference the user-facing behavior and the system integration, not just file edits.
 
+## 2026-04-16
+
+### Added
+
+- Added a new JP tutorial lesson for the runtime cutover and an architecture handoff at `../architecture/IOS_RUNTIME_CUTOVER_SUMMARY.md`.
+- Added regression coverage for the proof-readback sealing path, canonical proof metadata mapping, canonical title validation, and prevention of legacy remote history from falsely sealing local canonical sessions.
+
+### Changed
+
+- Changed the live `/api/anky/submit` completion path so accepted sessions persist into the canonical local archive immediately, then reconcile title, reflection, image, proof, and backend anky id through `GET /api/anky/sessions/{session_hash}` and `GET /api/anky/sessions/{session_hash}/proof`.
+- Changed archive/profile/history runtime behavior so the active profile surface, pending retry flow, daily prompt recovery, and background sealing path now derive from `LocalArchiveRecord` instead of treating `/swift/v2/writings` or `/swift/v2/writing/{sessionId}/status` as canonical truth for finished Ankys.
+- Changed local-vs-remote archive merging so legacy `/swift/v2/writings` data can still enrich the archive, but it can no longer promote a canonical local session to `.synced` before proof and the other required artifacts actually exist.
+
+### Verified
+
+- Could not run `xcodebuild` or `swift` in this environment because the Apple toolchain is not installed here. Validation for this pass is limited to code review and test additions in-repo.
+
+## 2026-04-15
+
+### Added
+
+- Added `LocalArchiveStore.swift` as the canonical local archive persistence layer for `LocalArchiveRecord`, with migration from the older `anky.cached.writings` cache and legacy projection writes kept only as compatibility output.
+- Added canonical processor readback/proof client models and API hooks for `GET /api/anky/sessions/{session_hash}` and `GET /api/anky/sessions/{session_hash}/proof`, plus mapping helpers back into `AnkyProofMetadata` and `LocalArchiveRecord`.
+- Added regression coverage for canonical retry payload retention inside `LocalArchiveRecord`, local-vs-remote archive merge behavior, and canonical processor status/proof mapping onto the local archive model.
+- Added a JP tutorial lesson and the required `architecture/IOS_ARCHIVE_NORMALIZATION_SUMMARY.md` handoff for this normalization pass.
+
+### Changed
+
+- Changed archive persistence so `AppState` now owns canonical `localArchiveRecords` and projects `writingHistory` from that archive state instead of mutating `CachedWritingEntry` as the source of truth.
+- Changed active write capture, pending submit state, generated-artifact updates, retry payload repair, and sync-state transitions to flow through `AnkySessionBundle` and `LocalArchiveRecord` before adapting back to legacy UI models.
+- Changed pending retry logic to sweep and reconstruct from canonical archive records first, leaving `CachedWritingEntry` as a UI adapter instead of the retry source of truth.
+- Changed `AnkySessionBundle` to retain the local `.anky` payload handle directly (`canonicalSessionString` and canonical file path), so local-first resend durability no longer depends on the legacy cache shape.
+
+### Verified
+
+- Could not run `xcodebuild` or `swift` in this environment because the toolchain is not installed here. Validation for this pass is limited to code review and test additions in-repo.
+
+## 2026-04-15
+
+### Added
+
+- Added `AnkyContractFoundation.swift` with the first iOS contract-foundation layer: canonical `AnkySessionBundle`, `LocalArchiveRecord`, `AnkyProofMetadata`, `AnkyImageArtifact`, centralized qualification constants, 3-word title validation, and required-artifact completeness validation.
+- Added adapters from `LocalWritingCapture`, `CachedWritingEntry`, `WritingItem`, and `WritingStatusResponse` into the new canonical contract types so later refactors can cut over without inventing more names.
+- Added unit coverage for the canonical title rule, artifact completeness, local capture to session-bundle projection, and rejection of legacy placeholder titles as canonical completed titles.
+- Added a JP tutorial lesson on the contract-foundation mental model and an architecture-side `IOS_CONTRACT_FOUNDATION_SUMMARY.md` handoff document for the next PR.
+
+### Changed
+
+- Changed the core 8-minute / 300-word qualification rule to resolve through one obvious source of truth in `AnkyContractFoundation.swift`, with low-risk call sites updated across writing, cache, queue, profile, and flow-score code.
+- Changed the canonical `/api/anky/submit` request builder to derive its timing/hash semantics from the new session-bundle projection instead of ad hoc per-call calculations.
+- Changed legacy cache/history/archive/proof types and paths to be labeled explicitly as legacy projections or non-canonical flows, including older sealed-write, relay, Arweave, and app-group archive code paths.
+
+### Verified
+
+- Could not run `xcodebuild` or `swift` in this environment because the toolchain is not installed here. Validation for this pass is limited to code review and test additions in-repo.
+
 ## 2026-04-15
 
 ### Added

@@ -27,8 +27,7 @@ struct AnkyProfileView: View {
     }
 
     private var sessions: [ProfileAnkySession] {
-        appState.writingHistory
-            .filter(\.isAnky)
+        appState.canonicalArchiveAnkys
             .sorted { $0.createdAt > $1.createdAt }
             .map(ProfileAnkySession.init)
     }
@@ -662,12 +661,16 @@ private struct ProfileConversationSheet: View {
 
     private let bottomAnchorID = "profile-conversation-bottom"
 
+    private var liveRecord: LocalArchiveRecord {
+        appState.archiveRecord(for: session.id) ?? session.record
+    }
+
     private var liveEntry: CachedWritingEntry {
-        appState.writingHistory.first(where: { $0.id == session.id }) ?? session.entry
+        liveRecord.legacyCachedWritingEntry
     }
 
     private var liveSession: ProfileAnkySession {
-        ProfileAnkySession(entry: liveEntry)
+        ProfileAnkySession(record: liveRecord)
     }
 
     private var retryStatusMessage: String {
@@ -675,7 +678,7 @@ private struct ProfileConversationSheet: View {
             return pendingRetryStatus.message
         }
 
-        return "this anky is already part of your local history. if the backend stalled, resend the same canonical .anky session from here."
+        return canonicalPendingMessage(for: liveRecord)
     }
 
     private var displayMessages: [ProfileConversationDisplayMessage] {
@@ -794,7 +797,7 @@ private struct ProfileConversationSheet: View {
 
                 Spacer()
 
-                Text(liveSession.isSealed ? "✦ sealed" : "○ unsealed")
+                Text(liveSession.statusLabel)
                     .font(.system(size: 10, weight: .medium))
                     .tracking(0.5)
                     .foregroundStyle((liveSession.kingdom ?? .fallback).color.opacity(liveSession.isSealed ? 0.78 : 0.34))
@@ -846,7 +849,7 @@ private struct ProfileConversationSheet: View {
                 .disabled(isRetryingPendingAnky)
             }
 
-            Text("the resend reuses the same session hash and checks the existing backend status before it posts again.")
+            Text("the resend reuses the same session hash and checks the canonical processor snapshot before it posts again.")
                 .font(.system(size: 10, weight: .medium))
                 .tracking(0.2)
                 .foregroundStyle(Color.ankyTextMuted)
@@ -1043,13 +1046,12 @@ private struct ProfileConversationSheet: View {
     private func retryPendingAnkySubmission() {
         guard !isRetryingPendingAnky else { return }
 
-        let entry = liveEntry
         isRetryingPendingAnky = true
         pendingRetryStatus = nil
 
         Task {
             do {
-                let result = try await PendingAnkyRetryService.retry(entry: entry, appState: appState)
+                let result = try await PendingAnkyRetryService.retry(record: liveRecord, appState: appState)
                 await MainActor.run {
                     switch result {
                     case .synced:
@@ -1076,6 +1078,29 @@ private struct ProfileConversationSheet: View {
                     isRetryingPendingAnky = false
                 }
             }
+        }
+    }
+
+    private func canonicalPendingMessage(for record: LocalArchiveRecord) -> String {
+        let missing = record.artifactCompleteness.missingArtifacts
+        guard !missing.isEmpty else {
+            return "the backend has accepted this session hash. the local archive is waiting for the canonical snapshot and proof to settle."
+        }
+
+        let labels = missing.map { artifactName($0) }
+        return "the local archive has this anky, but \(labels.joined(separator: ", ")) is still pending from the canonical processor readback."
+    }
+
+    private func artifactName(_ artifact: AnkyRequiredArtifact) -> String {
+        switch artifact {
+        case .title:
+            return "title"
+        case .reflection:
+            return "reflection"
+        case .image:
+            return "image"
+        case .proof:
+            return "proof"
         }
     }
 
@@ -1217,14 +1242,16 @@ private struct PendingRetryStatus: Equatable {
 }
 
 private struct ProfileAnkySession: Identifiable, Equatable {
-    let entry: CachedWritingEntry
+    let record: LocalArchiveRecord
+
+    var entry: CachedWritingEntry { record.legacyCachedWritingEntry }
 
     var id: String { entry.id }
     var title: String {
-        if let title = entry.ankyTitle?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+        if let title = record.sessionBundle.title3Words?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
             return title
         }
-        let words = entry.content
+        let words = record.sessionBundle.writingPlaintext
             .replacingOccurrences(of: "\n", with: " ")
             .split(whereSeparator: \.isWhitespace)
             .prefix(6)
@@ -1232,32 +1259,35 @@ private struct ProfileAnkySession: Identifiable, Equatable {
         return words.isEmpty ? "anky" : words.lowercased()
     }
     var kingdom: ProfileKingdomSpec? {
-        ProfileKingdomSpec.fromBackendName(entry.kingdom)
+        ProfileKingdomSpec.fromBackendName(record.kingdom)
             ?? entry.ankyKingdom.flatMap { ProfileKingdomSpec.fromBackendName($0.rawValue) }
     }
     var imageURL: URL? { entry.remoteImageURL }
-    var createdAt: Date { entry.createdAt }
-    var durationSeconds: Double { entry.durationSeconds }
-    var wordCount: Int { entry.wordCount }
-    var isComplete: Bool { entry.durationSeconds >= LocalWritingCapture.requiredDurationForAnky }
-    var isSealed: Bool { entry.syncState == .synced }
+    var createdAt: Date { record.createdAt }
+    var durationSeconds: Double { record.sessionBundle.durationSeconds }
+    var wordCount: Int { record.sessionBundle.wordCount }
+    var isComplete: Bool {
+        record.sessionBundle.qualifiesForCanonicalAnky
+    }
+    var isSealed: Bool { record.isCanonicallySealed }
+    var statusLabel: String { isSealed ? "✦ sealed" : "○ processing" }
     var flowScore: Double {
-        if let score = entry.flowScore {
+        if let score = record.flowScore {
             return min(max(score, 0), 1)
         }
-        let durationMinutes = max(entry.durationSeconds / 60, 1)
-        let fallback = min(max((Double(entry.wordCount) / durationMinutes) / 60.0, 0), 1)
+        let durationMinutes = max(record.sessionBundle.durationSeconds / 60, 1)
+        let fallback = min(max((Double(record.sessionBundle.wordCount) / durationMinutes) / 60.0, 0), 1)
         return fallback
     }
     var writingPreview: String {
-        let flattened = entry.content
+        let flattened = record.sessionBundle.writingPlaintext
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard flattened.count > 120 else { return flattened }
         return String(flattened.prefix(120)) + "..."
     }
-    var shortDateLabel: String { ProfileDateFormatters.shortDate.string(from: entry.createdAt).lowercased() }
-    var timeLabel: String { ProfileDateFormatters.time.string(from: entry.createdAt).lowercased() }
+    var shortDateLabel: String { ProfileDateFormatters.shortDate.string(from: record.createdAt).lowercased() }
+    var timeLabel: String { ProfileDateFormatters.time.string(from: record.createdAt).lowercased() }
 }
 
 private struct ProfileKingdomSpec: Identifiable {

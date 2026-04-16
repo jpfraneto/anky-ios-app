@@ -9,7 +9,8 @@ enum DailyPromptNotificationManager {
     // MARK: - Schedule with dynamic prompt
 
     /// Schedule (or replace) the daily reminder with the given prompt.
-    /// Called when status poll returns a non-null nextPrompt.
+    /// Canonical submit flows now use the locally advanced prompt instead of
+    /// depending on legacy backend next-prompt readback.
     static func scheduleWithPrompt(_ prompt: String) async {
         guard !prompt.isEmpty else { return }
 

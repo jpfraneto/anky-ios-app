@@ -1,5 +1,8 @@
 # 019. Profile Pending Retry And Submit Idempotency
 
+Note as of April 16, 2026:
+This lesson still explains why retry must preserve the canonical `.anky` payload and `sessionHash`, but the current retry path now checks canonical processor snapshot/proof readback before reposting. Read `025_runtime_cutover_local_archive_first.md` for the current runtime behavior.
+
 This lesson explains the fallback and recovery path for a real anky that exists in local history but never finished backend processing.
 
 ## Mental model

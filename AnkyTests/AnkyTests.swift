@@ -71,6 +71,334 @@ struct AnkyTests {
         #expect(!LocalWritingCapture.qualifiesForAnky(text: enoughWords, duration: 479))
     }
 
+    @Test("Canonical titles require exactly three words")
+    func canonicalTitleValidationRequiresThreeWords() {
+        #expect(AnkyContract.Title.isValid("Ashes That Remember"))
+        #expect(!AnkyContract.Title.isValid("Ashes Remember"))
+        #expect(!AnkyContract.Title.isValid("Ashes That Remember Forever"))
+        #expect(AnkyContract.Title.validation(for: nil) == .missing)
+    }
+
+    @Test("Artifact completeness requires title reflection image and proof")
+    func artifactCompletenessRequiresAllCanonicalArtifacts() {
+        let verifiedProof = AnkyProofMetadata(
+            sessionHash: "abc123",
+            anchorSignature: "solana-signature",
+            source: .apiSubmit,
+            verificationStatus: .verified
+        )
+
+        let complete = AnkyContract.Artifacts.completeness(
+            title: "Ashes That Remember",
+            reflection: "You kept writing until the pattern became visible.",
+            image: AnkyImageArtifact(remoteURL: "https://anky.app/images/1.png"),
+            proof: verifiedProof
+        )
+        let missingProof = AnkyContract.Artifacts.completeness(
+            title: "Ashes That Remember",
+            reflection: "You kept writing until the pattern became visible.",
+            image: AnkyImageArtifact(remoteURL: "https://anky.app/images/1.png"),
+            proof: nil
+        )
+
+        #expect(complete.isComplete)
+        #expect(missingProof.missingArtifacts == [.proof])
+    }
+
+    @Test("Local writing captures project into canonical session bundles")
+    func localCaptureProjectsIntoCanonicalBundle() {
+        let text = Array(repeating: "word", count: 300).joined(separator: " ")
+        let sessionString = "1713268800000 word"
+        let sessionHash = AnkySessionFileStore.sha256Hex(of: Data(sessionString.utf8))
+        let capture = LocalWritingCapture(
+            sessionId: "capture-1",
+            prompt: "write",
+            text: text,
+            duration: AnkyContract.Qualification.minimumDurationSeconds,
+            wordCount: AnkyContract.Qualification.minimumWordCount,
+            keystrokeDeltas: [10, 20, 30],
+            finishedAt: Date(timeIntervalSince1970: 1_713_268_800),
+            estimatedFlowScore: 0.72,
+            ankySessionString: sessionString,
+            ankyFilePath: "/tmp/capture-1.anky",
+            sessionHash: sessionHash
+        )
+
+        let bundle = capture.canonicalSessionBundle
+        let archiveRecord = capture.localArchiveRecord
+
+        #expect(bundle.sessionHash == sessionHash)
+        #expect(bundle.qualifiesForCanonicalAnky)
+        #expect(bundle.syncStatus == .localOnly)
+        #expect(archiveRecord.source == .localSessionBundle)
+    }
+
+    @Test("Local archive records keep the canonical retry payload")
+    func localArchiveRecordsRetainRetryPayload() {
+        let text = Array(repeating: "word", count: 300).joined(separator: " ")
+        let sessionString = "1713268800000 word"
+        let sessionHash = AnkySessionFileStore.sha256Hex(of: Data(sessionString.utf8))
+        let capture = LocalWritingCapture(
+            sessionId: "capture-retry-1",
+            prompt: "write",
+            text: text,
+            duration: AnkyContract.Qualification.minimumDurationSeconds,
+            wordCount: AnkyContract.Qualification.minimumWordCount,
+            keystrokeDeltas: [11, 22, 33],
+            finishedAt: Date(timeIntervalSince1970: 1_713_268_800),
+            estimatedFlowScore: 0.64,
+            ankySessionString: sessionString,
+            ankyFilePath: "/tmp/capture-retry-1.anky",
+            sessionHash: sessionHash
+        )
+
+        let record = capture.localArchiveRecord(syncStatus: .pending)
+        let retryCapture = record.retryableCapture
+
+        #expect(record.sessionBundle.canonicalSessionString == sessionString)
+        #expect(record.sessionBundle.canonicalSessionFilePath == "/tmp/capture-retry-1.anky")
+        #expect(record.sessionBundle.sessionHash == sessionHash)
+        #expect(retryCapture?.ankySessionString == sessionString)
+        #expect(retryCapture?.ankyFilePath == "/tmp/capture-retry-1.anky")
+        #expect(retryCapture?.sessionHash == sessionHash)
+    }
+
+    @Test("Remote merge keeps the canonical local bundle while filling in remote artifacts")
+    func remoteMergePreservesCanonicalLocalBundle() {
+        let text = Array(repeating: "word", count: 300).joined(separator: " ")
+        let sessionString = "1713268800000 word"
+        let localCapture = LocalWritingCapture(
+            sessionId: "merge-session-1",
+            prompt: "write",
+            text: text,
+            duration: 500,
+            wordCount: 320,
+            keystrokeDeltas: [15, 20, 25],
+            finishedAt: Date(timeIntervalSince1970: 1_763_157_600),
+            estimatedFlowScore: 0.82,
+            ankySessionString: sessionString,
+            ankyFilePath: "/tmp/merge-session-1.anky",
+            sessionHash: AnkySessionFileStore.sha256Hex(of: Data(sessionString.utf8))
+        )
+        let localRecord = localCapture.localArchiveRecord(syncStatus: .pending)
+        let remoteItem = WritingItem(
+            id: "merge-session-1",
+            content: text,
+            durationSeconds: 500,
+            wordCount: 320,
+            isAnky: true,
+            response: "Remote reflection",
+            ankyId: "anky-remote-1",
+            ankyTitle: "Ashes That Remember",
+            ankyImagePath: "/images/merge.png",
+            createdAt: "2026-03-20T10:00:00Z",
+            flowScore: 0.91
+        )
+
+        let merged = LocalArchiveStore.mergedRecords(
+            remoteRecords: [remoteItem.localArchiveRecord],
+            existingRecords: [localRecord]
+        )
+        let mergedRecord = try #require(merged.first)
+
+        #expect(mergedRecord.sessionBundle.canonicalSessionString == sessionString)
+        #expect(mergedRecord.sessionBundle.canonicalSessionFilePath == "/tmp/merge-session-1.anky")
+        #expect(mergedRecord.backendAnkyId == "anky-remote-1")
+        #expect(mergedRecord.sessionBundle.title3Words == "Ashes That Remember")
+        #expect(mergedRecord.sessionBundle.reflection == "Remote reflection")
+        #expect(mergedRecord.sessionBundle.syncStatus == .pending)
+        #expect(mergedRecord.artifactCompleteness.missingArtifacts == [.proof])
+        #expect(mergedRecord.source == .localSessionBundle)
+    }
+
+    @Test("Canonical processor proof readback maps into canonical proof metadata")
+    func canonicalProofReadbackMapsIntoProofMetadata() {
+        let proofResponse = CanonicalProofResponse(
+            identity: CanonicalProcessorSessionIdentity(
+                sessionHash: "session-hash-123",
+                ankyId: "anky-123",
+                walletAddress: "wallet-123"
+            ),
+            readbackPaths: CanonicalProcessorReadbackPaths(
+                statusPath: "/api/anky/sessions/session-hash-123",
+                proofPath: "/api/anky/sessions/session-hash-123/proof"
+            ),
+            proof: CanonicalProofReadback(
+                sessionHash: "session-hash-123",
+                status: "complete",
+                receipt: "solana-signature",
+                proofUrl: "https://anky.app/proof/session-hash-123",
+                walletSignature: "wallet-signature",
+                verificationStatus: "verified",
+                completedAt: "2026-04-15T12:00:00Z"
+            )
+        )
+
+        let proofMetadata = proofResponse.canonicalProofMetadata
+
+        #expect(proofMetadata?.sessionHash == "session-hash-123")
+        #expect(proofMetadata?.anchorSignature == "solana-signature")
+        #expect(proofMetadata?.walletSignature == "wallet-signature")
+        #expect(proofMetadata?.proofURL == "https://anky.app/proof/session-hash-123")
+        #expect(proofMetadata?.verificationStatus == .verified)
+    }
+
+    @Test("Canonical processor status applies cleanly onto a local archive record")
+    func canonicalProcessorStatusAppliesToLocalArchiveRecord() {
+        let text = Array(repeating: "word", count: 300).joined(separator: " ")
+        let record = LocalWritingCapture(
+            sessionId: "processor-status-1",
+            prompt: "write",
+            text: text,
+            duration: 500,
+            wordCount: 320,
+            keystrokeDeltas: [],
+            finishedAt: Date(timeIntervalSince1970: 1_763_157_600),
+            estimatedFlowScore: 0.8,
+            ankySessionString: "1713268800000 word",
+            ankyFilePath: "/tmp/processor-status-1.anky",
+            sessionHash: "session-hash-processor-1"
+        )
+        .localArchiveRecord(syncStatus: .pending)
+
+        let response = CanonicalProcessorStatusResponse(
+            identity: CanonicalProcessorSessionIdentity(
+                sessionHash: "session-hash-processor-1",
+                ankyId: "anky-processor-1",
+                walletAddress: "wallet-processor-1"
+            ),
+            readbackPaths: CanonicalProcessorReadbackPaths(
+                statusPath: "/api/anky/sessions/session-hash-processor-1",
+                proofPath: "/api/anky/sessions/session-hash-processor-1/proof"
+            ),
+            status: CanonicalProcessorStatusSnapshot(
+                overallStatus: "complete",
+                titleStatus: "complete",
+                reflectionStatus: "complete",
+                imageStatus: "complete",
+                proofStatus: "complete"
+            ),
+            lifecycle: CanonicalProcessorLifecycleTimestamps(
+                submittedAt: "2026-04-15T11:55:00Z",
+                acceptedAt: "2026-04-15T11:55:05Z",
+                reflectedAt: "2026-04-15T11:55:12Z",
+                imagedAt: "2026-04-15T11:55:25Z",
+                provedAt: "2026-04-15T11:55:28Z",
+                completedAt: "2026-04-15T11:55:30Z"
+            ),
+            artifacts: CanonicalProcessorArtifacts(
+                title: "Ashes That Remember",
+                reflection: "You stayed long enough to hear the shape of it.",
+                image: CanonicalProcessorImageArtifact(
+                    imageUrl: "/images/processor-status-1.png",
+                    artifactRef: "artifact-1",
+                    mimeType: "image/png"
+                )
+            ),
+            proof: CanonicalProofReadback(
+                sessionHash: "session-hash-processor-1",
+                status: "complete",
+                receipt: "solana-signature",
+                proofUrl: "https://anky.app/proof/session-hash-processor-1",
+                walletSignature: "wallet-signature",
+                verificationStatus: "verified",
+                completedAt: "2026-04-15T11:55:28Z"
+            ),
+            artifactCompleteness: nil,
+            artifactSetValid: true,
+            legacyRetentionBoundary: LegacyProcessorRetentionBoundary(
+                plaintextWritingRetained: false,
+                sessionPayloadRetained: false
+            )
+        )
+
+        let updated = record.applyingCanonicalProcessorStatus(response)
+
+        #expect(updated.backendAnkyId == "anky-processor-1")
+        #expect(updated.sessionBundle.title3Words == "Ashes That Remember")
+        #expect(updated.sessionBundle.reflection == "You stayed long enough to hear the shape of it.")
+        #expect(updated.sessionBundle.image?.remoteURL == "/images/processor-status-1.png")
+        #expect(updated.sessionBundle.proofMetadata?.verificationStatus == .verified)
+        #expect(updated.sessionBundle.syncStatus == .synced)
+        #expect(updated.isCanonicallySealed)
+    }
+
+    @Test("Canonical proof readback seals a pending local archive once the other artifacts exist")
+    func canonicalProofReadbackSealsPendingLocalArchive() {
+        let text = Array(repeating: "word", count: 300).joined(separator: " ")
+        let pendingRecord = LocalWritingCapture(
+            sessionId: "proof-readback-1",
+            prompt: "write",
+            text: text,
+            duration: 500,
+            wordCount: 320,
+            keystrokeDeltas: [],
+            finishedAt: Date(timeIntervalSince1970: 1_763_157_600),
+            estimatedFlowScore: 0.74,
+            ankySessionString: "1713268800000 word",
+            ankyFilePath: "/tmp/proof-readback-1.anky",
+            sessionHash: "session-hash-proof-1"
+        )
+        .localArchiveRecord(syncStatus: .pending)
+        .applyingArtifacts(
+            title3Words: "Ashes That Remember",
+            reflection: "You stayed with the page until it answered back.",
+            imageLocator: "/images/proof-readback-1.png"
+        )
+
+        #expect(pendingRecord.sessionBundle.syncStatus == .pending)
+        #expect(pendingRecord.artifactCompleteness.missingArtifacts == [.proof])
+
+        let proofResponse = CanonicalProofResponse(
+            identity: CanonicalProcessorSessionIdentity(
+                sessionHash: "session-hash-proof-1",
+                ankyId: "anky-proof-1",
+                walletAddress: "wallet-proof-1"
+            ),
+            readbackPaths: CanonicalProcessorReadbackPaths(
+                statusPath: "/api/anky/sessions/session-hash-proof-1",
+                proofPath: "/api/anky/sessions/session-hash-proof-1/proof"
+            ),
+            proof: CanonicalProofReadback(
+                sessionHash: "session-hash-proof-1",
+                status: "complete",
+                receipt: "solana-signature",
+                proofUrl: "https://anky.app/proof/session-hash-proof-1",
+                walletSignature: "wallet-signature",
+                verificationStatus: "verified",
+                completedAt: "2026-04-15T12:00:00Z"
+            )
+        )
+
+        let sealedRecord = pendingRecord.applyingCanonicalProofReadback(proofResponse)
+
+        #expect(sealedRecord.sessionBundle.syncStatus == .synced)
+        #expect(sealedRecord.isCanonicallySealed)
+        #expect(sealedRecord.artifactCompleteness.isComplete)
+    }
+
+    @Test("Legacy placeholder titles stay non-canonical in local archive records")
+    func legacyPlaceholderTitlesFailCanonicalCompleteness() {
+        let entry = CachedWritingEntry(
+            id: "legacy-title",
+            prompt: "",
+            content: Array(repeating: "word", count: 300).joined(separator: " "),
+            durationSeconds: AnkyContract.Qualification.minimumDurationSeconds,
+            wordCount: AnkyContract.Qualification.minimumWordCount,
+            isAnky: true,
+            response: "A reflection exists.",
+            ankyId: "anky-legacy",
+            ankyTitle: "An anky was born.",
+            ankyImagePath: "https://anky.app/images/legacy.png",
+            createdAt: .now,
+            flowScore: 0.9,
+            syncState: .synced,
+            sessionHash: "session-hash-1"
+        )
+
+        #expect(entry.localArchiveRecord.artifactCompleteness.missingArtifacts == [.title])
+    }
+
     @Test("Legacy short pending writes stay local-only after migration")
     func shortPendingWritesMigrateToLocalOnly() {
         defer { WritingCacheStore.save([]) }

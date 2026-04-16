@@ -1,5 +1,6 @@
 import Foundation
 
+/// Legacy shared session-state snapshot from the pre-session-bundle model.
 struct AnkySessionState: Codable {
     var isActive: Bool = false
     var phase: SessionPhase = .idle

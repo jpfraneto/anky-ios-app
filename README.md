@@ -15,8 +15,8 @@ The current app centers one product path:
 - a persisted real anky still advances the deeper unlock state, but the visible signed-in shell is now the same chat-first route for both locked and unlocked users
 - active drafts autosave every 300ms and restore on relaunch / foreground resume
 - crossing 8 minutes triggers a distinct milestone effect, then the session seals and moves into the reflection pipeline
-- after a session sends, the user's raw writing appears first, then Anky reflects, then the generated image arrives inline in chat, and profile/history update from the same pending local record instead of waiting for `/swift/v2/writings`
-- if that backend processing stalls, the pending anky stays visible in profile, retries automatically on the next authenticated launch/login, and can still be resent manually from the archive using the same canonical `.anky` payload and session hash
+- after a session sends, the user's raw writing appears first, then Anky reflects, then the generated image arrives inline in chat, and profile/history stay driven by the same local archive record while canonical processor snapshot/proof readback finishes the session
+- if that backend processing stalls, the pending anky stays visible in profile, retries automatically on the next authenticated launch/login, and keeps reconciling through the same canonical `.anky` payload, session hash, snapshot route, and proof route
 - the conversation resets by UTC day without deleting older days, and the profile screen becomes the archive/history surface
 - that writing can become a Spanish `cuentacuentos` inside a child's world in the same app
 - the same eight-second seal gesture is now the shared confirmation ritual for writing, browser auth, and altar actions
@@ -30,7 +30,9 @@ The app is not a separate product from the backend. It is the mobile surface for
 - There is no new email, phone, or social-login onboarding path.
 - The phone's master identity is a local BIP39 phrase that derives one canonical Solana Ed25519 address.
 - A real anky requires `>= 8 minutes` and `>= 300 words`.
-- `done` or a tolerated `image` / `solana` terminal error from `POST /api/anky/submit` is canonical for the active chat-first writer; legacy surfaces still compile against `POST /swift/v2/write`.
+- `AnkyContractFoundation.swift` now holds the canonical client-side contract vocabulary: `AnkySessionBundle`, `LocalArchiveRecord`, `AnkyProofMetadata`, centralized qualification constants, 3-word title validation, and artifact-completeness validation.
+- `LocalArchiveStore.swift` now holds the canonical persisted local archive, `AppState` treats `writingHistory` as a legacy UI projection from `localArchiveRecords`, and the active archive/profile/history surfaces derive from that local archive first.
+- `POST /api/anky/submit` acceptance now persists the backend anky id into the local archive immediately, then the client reconciles completion through `GET /api/anky/sessions/{session_hash}` and `GET /api/anky/sessions/{session_hash}/proof` until title, reflection, image, and proof are all present. Legacy surfaces still compile against `POST /swift/v2/write`.
 - If `persisted == false`, the session stays local-only and must not appear in cloud history.
 - Unlock state still advances only after a successful persisted real anky, or when a recovered identity already has persisted ankys on the backend, but the visible signed-in shell is now shared.
 - The routed signed-in shell is `AnkyChatView`; fresh launches default into the writing overlay, but deeplinks take priority and can open QR login, Now rooms, shared Ankys, or prompt-specific writing instead.
@@ -38,7 +40,7 @@ The app is not a separate product from the backend. It is the mobile surface for
 - The altar still exists, but it now lives behind the profile support entry instead of the main chat header.
 - The active typed writing surface uses one persistent UIKit `UITextView` with delete, paste, newline, autocorrect, autocapitalization, spellcheck, and QuickType disabled.
 - The canonical write artifact is a UTF-8 `.anky` file written under `ankys/yyyy/mm/dd/{session_hash}.anky`, with line 1 storing the first accepted keystroke's absolute epoch milliseconds and every later line storing delta milliseconds. While a session is still live, the app also refreshes `partial_{sessionId}.anky` every 300ms so a crash can resume without losing the keystroke stream.
-- Pending real ankys preserve that canonical payload metadata in local history, so the profile sheet can ask the backend to process the same session later instead of losing the submission path when the original SSE request dies.
+- Pending real ankys preserve that canonical payload metadata in the local archive, so the profile sheet and retry service can ask the backend to process or re-read the same session later instead of losing the submission path when the original SSE request dies.
 - The active writing overlay uses the prompt itself as the `UITextView` placeholder, shows both the top and bottom bars before the first keystroke, only turns the top bar into an active idle warning after 3 seconds of silence, drains that warning from right to left, keeps the 8-minute progress bar at the bottom, hides the timer/exit chrome once writing is underway so the text area feels cleaner, dismisses the keyboard immediately when the user exits the writing surface, and now opens from chat as one continuous full-screen transition instead of a staged blank reveal.
 - The red close path now ends editing on the key window and dismisses the overlay on the next main turn, while `AnkyComposerTextView` cancels stale focus work during teardown so keyboard dismissal cannot race the SwiftUI removal path.
 - The settings sheet now owns text-size preview, wallet copy, recovery-phrase presentation, connected-device session management, formalities links, a premium preview bottom sheet, and the branded `Created with 💚 by Anky, Inc.` footer.
@@ -70,14 +72,15 @@ The active flow is:
 2. The backend issues a one-time challenge through `POST /swift/v2/auth/challenge`.
 3. The app signs the exact challenge bytes locally with Ed25519, base58-encodes the signature, and verifies through `POST /swift/v2/auth/verify`.
 4. The active chat-first writer writes `partial_{sessionId}.anky` while the session is in progress, then atomically renames that file into the final hash-named canonical `.anky` file on completion, signs that exact file hash with the user's Solana seed identity, and submits the file contents through `POST /api/anky/submit`, which streams `accepted`, `reflection_chunk`, `reflection_complete`, `image_url`, `solana`, and `done` events over SSE.
-5. The sealing screen intercepts the end of writing before chat is revealed, records the pending real anky locally, accumulates reflection chunks in `ChatViewModel`, and now tolerates a normal stream close after acceptance so the UI does not hang forever waiting for one last event. If the user skips the sealing ritual, `AnkyChatView` still records that same pending anky immediately and streams the same submit contract in the background, so chat/profile stop lagging behind the finished session.
+5. The sealing screen intercepts the end of writing before chat is revealed, records the pending real anky locally, accumulates reflection chunks in `ChatViewModel`, persists the accepted backend anky id as soon as the stream emits `accepted`, and then reconciles the local archive through `GET /api/anky/sessions/{session_hash}` and `/proof` so the UI can survive delayed processor completion or a normal stream close after acceptance. If the user skips the sealing ritual, `AnkyChatView` still records that same pending anky immediately and drives the same reconciliation in the background, so chat/profile stop lagging behind the finished session.
 6. Legacy writing surfaces still compile against `POST /swift/v2/write` until the parallel migration branch lands.
 7. After the reflected response lands, the live chat surface still uses `POST /api/chat-quick` with the latest writing text plus the current-session reflection thread, while archived profile sheets prefer `POST /api/anky/{id}/conversation` when a real backend anky id exists and fall back to `POST /api/chat-quick` for older/local-only sessions. All of those follow-ups are mirrored into `AnkyThreadChatStore` for later profile replay.
 8. The seal gesture is reused in the writing flow, QR browser login, and altar-related confirmation surfaces.
 9. The altar loads through `GET /api/altar`, creates PaymentIntents through `POST /api/altar/payment-intent`, confirms Apple Pay through Stripe, then records the burn through `POST /api/altar/apple-pay`.
 10. Browser QR auth deep-links into `anky://seal?challenge=...`, the phone signs the challenge token locally, and the app sends it to `POST /api/auth/qr/seal`.
 11. The parent can create child profiles through `POST /swift/v2/children` using a deterministic child address derived from the parent key plus a SHA-256-based salt built from parent address, name, and birthdate.
-12. The app reads identity, persisted history, child profiles, and child stories through `GET /swift/v2/me`, `GET /swift/v2/writings`, `GET /swift/v2/children`, and `GET /swift/v2/cuentacuentos/*`.
+12. The app now treats `localArchiveRecords` as the canonical client archive and uses `GET /api/anky/sessions/{session_hash}` plus `GET /api/anky/sessions/{session_hash}/proof` for active Anky completion, proof, and pending-state reconciliation.
+13. The app still reads identity, compatibility history enrichment, child profiles, and child stories through `GET /swift/v2/me`, `GET /swift/v2/writings`, `GET /swift/v2/children`, and `GET /swift/v2/cuentacuentos/*`, but `/swift/v2/writings` no longer defines canonical completion for a local Anky.
 
 Legacy meditation, breathwork, sadhana, and facilitator surfaces were removed from the active product.
 
@@ -139,7 +142,8 @@ Monorepo: <https://github.com/jpfraneto/anky-monorepo>
 - Settings font samples now preview at the live selected writing size instead of a fixed placeholder size
 - The active settings sheet now uses grouped dark cards instead of default `Form` chrome, includes connected-device revoke controls, and opens Terms of Service, Privacy Policy, and FAQ inside an in-app Safari sheet
 - The active settings sheet also includes a premium subscription preview bottom sheet inspired by the design reference, while keeping purchase and restore behavior explicit placeholders until StoreKit is wired
-- Real-anky-only archive truth: short sessions stay local-only, real ankys are recorded locally as pending immediately, and fresh local real ankys remain visible even before `/swift/v2/writings` catches up
+- Real-anky-only archive truth: short sessions stay local-only, real ankys are recorded locally as pending immediately, and the local archive remains the app's source of truth even before any legacy history endpoint catches up
+- Canonical processor readback/proof reconciliation: accepted real ankys keep reconciling against `GET /api/anky/sessions/{session_hash}` and `/proof`, so title, reflection, image, and proof status come from the processor snapshot instead of legacy status polling
 - Daily UTC chat reset with archived previous days instead of destructive clearing
 - Profile v2 archive surface with a compact hero row, locally derived points/level/streak/words, real-anky image cards, tappable calendar drill-down, full territories list across all eight kingdoms, and large bottom-sheet conversation replay for each archived anky
 - Legacy `AnkyWritingSession` still contains the older two-life idle mechanic with a text-only `type to resume` pause state after the first lost life
@@ -149,7 +153,7 @@ Monorepo: <https://github.com/jpfraneto/anky-monorepo>
 - Full unlock state still depends on persisted real ankys, even though the visible signed-in shell is now shared
 - Persisted history view that excludes any local-only or `persisted: false` sessions
 - Post-reflection follow-up replies use `POST /api/chat-quick` in the live chat surface and prefer `POST /api/anky/{id}/conversation` inside archived profile sheets when a real backend anky id exists; both paths are mirrored into the per-anky local thread store
-- Reflections, titles, and generated image paths from the polled writing status are cached back into local writing history instead of being dropped
+- Canonical proof-aware profile/archive status: processing vs sealed state now comes from `LocalArchiveRecord` completeness and proof metadata instead of older synced-status heuristics
 
 ### Parent and child worlds
 
@@ -208,13 +212,16 @@ No third-party UI framework is used.
 ```text
 Anky/
   AnkyApp.swift               App entry point
-  AppState.swift              Root routing, identity state, unlock state, writing-history updates
+  AppState.swift              Root routing, identity state, unlock state, and canonical local-archive reconciliation
   ContentView.swift           Root pass-through into the active chat shell plus legacy shells that still compile
   AnkyChatView.swift          Active chat shell, fresh-launch writing overlay, deeplink priority handling, shared-Anky presentation, milestone flow, daily archive chat
   GenerateView.swift          Native Flux generation screen, polling loop, and collage gallery
   GeneratedAnkyStore.swift    Local persistence for completed and pending generated Ankys
   AnkyAPI.swift               `/swift/v2/*` client plus root `/api/*` endpoints including native generate/gallery routes
   AnkyModels.swift            Codable models aligned to backend responses
+  AnkyContractFoundation.swift
+                              Canonical session-bundle, local-archive, proof, qualification, and artifact-validation types
+  LocalArchiveStore.swift     Canonical persisted local archive and legacy-history merge adapter
   SealingView.swift           Full-screen post-write sealing surface and SSE-driven reveal gate
   SealView.swift              Reusable eight-second seal gesture
   AltarView.swift             Altar screen, Stripe Apple Pay, burn sync, reachable from profile support
@@ -232,7 +239,7 @@ Anky/
                               6:00 AM local reminder scheduling
   AnkyWritingSession.swift    Legacy NOW writing state machine and completion flow
   WritingSessionStore.swift   Legacy drafts plus live session snapshot persistence
-  WritingCacheStore.swift     Local writing history cache
+  WritingCacheStore.swift     Legacy writing-history cache compatibility wrapper around the canonical local archive
   ChildProfileStore.swift     Local child-profile cache
   ChildWorldComponents.swift  Shared emoji pattern UI pieces
   CreateChildView.swift       Multi-step child world creation flow
