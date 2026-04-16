@@ -65,7 +65,7 @@ enum LocalArchiveStore {
             guard !record.sessionBundle.qualifiesForCanonicalAnky else { return record }
             return record
                 .updatingSyncStatus(.localOnly, updatedAt: record.lastUpdatedAt)
-                .updating(isAnky: false, lastUpdatedAt: record.lastUpdatedAt)
+                .updating(lastUpdatedAt: record.lastUpdatedAt, isAnky: false)
         }
 
         save(migrated)
