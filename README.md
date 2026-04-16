@@ -36,6 +36,7 @@ The app is not a separate product from the backend. It is the mobile surface for
 - If `persisted == false`, the session stays local-only and must not appear in cloud history.
 - Unlock state still advances only after a successful persisted real anky, or when a recovered identity already has persisted ankys on the backend, but the visible signed-in shell is now shared.
 - The routed signed-in shell is `AnkyChatView`; fresh launches default into the writing overlay, but deeplinks take priority and can open QR login, Now rooms, shared Ankys, or prompt-specific writing instead.
+- A small top-right `ServerIndicator` now pings the currently configured backend root every 30 seconds; debug builds show a monospaced environment label (`staging` in the current runtime-cutover setup) and release builds show only the dot.
 - The native generate route now keeps generation state visually obvious with a live activity card and pending collage placeholders, and completed generated Ankys can be saved directly to Photos.
 - The altar still exists, but it now lives behind the profile support entry instead of the main chat header.
 - The active typed writing surface uses one persistent UIKit `UITextView` with delete, paste, newline, autocorrect, autocapitalization, spellcheck, and QuickType disabled.
@@ -127,6 +128,7 @@ Monorepo: <https://github.com/jpfraneto/anky-monorepo>
 - Chat-first root shell with the active prompt/history surface in `AnkyChatView`
 - Fresh launches now open directly into the writing overlay, while deeplinks for QR auth, `Now`, shared Ankys, and prompt-specific writing override that default presentation
 - A stripped chat header with a hamburger on the left that opens the profile/archive surface
+- A tiny runtime server indicator that sits in the top-right status area, reads `AnkyAPI.shared.baseURL`, and quietly reflects backend reachability without needing terminal logs
 - A native Flux generation screen with prompt input, aspect-ratio selection, an obvious in-progress generation card, backend polling through `/api/v1/generate` and `/api/v1/anky/:id`, a collage gallery of generated Ankys, and save-to-Photos for finished images
 - A dedicated forward-only `UITextView` writing overlay whose prompt lives inside the text view as the placeholder instead of separate prompt chrome
 - A full-screen `SealingView` that intercepts the end of writing, shows kingdom-of-the-day presentation, streams `/api/anky/submit`, and only reveals chat after seal or skip
@@ -218,6 +220,7 @@ Anky/
   GenerateView.swift          Native Flux generation screen, polling loop, and collage gallery
   GeneratedAnkyStore.swift    Local persistence for completed and pending generated Ankys
   AnkyAPI.swift               `/swift/v2/*` client plus root `/api/*` endpoints including native generate/gallery routes
+  ServerIndicator.swift       Small runtime environment and backend reachability indicator for the top-right status chrome
   AnkyModels.swift            Codable models aligned to backend responses
   AnkyContractFoundation.swift
                               Canonical session-bundle, local-archive, proof, qualification, and artifact-validation types

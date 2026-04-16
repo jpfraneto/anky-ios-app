@@ -14,6 +14,22 @@ This file tracks meaningful work on the Anky iOS app.
 
 ### Added
 
+- Added `ServerIndicator.swift`, a tiny runtime indicator that sends a quiet `HEAD` check to the active backend root every 30 seconds and exposes the result as a colored dot.
+- Added a JP tutorial lesson on how the app now surfaces backend environment and reachability state without depending on console logs.
+
+### Changed
+
+- Changed the main chat header, full-screen writing surface, and profile hero row so the runtime indicator stays visible on the primary validation surfaces during the iOS runtime cutover.
+- Changed `AnkyAPI.baseURL` from private to internal so UI-level runtime diagnostics can read the already-configured backend root instead of duplicating environment logic.
+
+### Verified
+
+- Did not run `xcodebuild` in this pass because the requested workflow is manual build validation from the open Xcode session.
+
+## 2026-04-16
+
+### Added
+
 - Added a new JP tutorial lesson for the runtime cutover and an architecture handoff at `../architecture/IOS_RUNTIME_CUTOVER_SUMMARY.md`.
 - Added regression coverage for the proof-readback sealing path, canonical proof metadata mapping, canonical title validation, and prevention of legacy remote history from falsely sealing local canonical sessions.
 
